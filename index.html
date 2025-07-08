@@ -1621,7 +1621,6 @@ function shuffle(arr) {
   }
   return arr;
 }
-createMaze();
 hasLeftMapCell = false;
 
 const STAR_COUNT = 180;
@@ -2924,20 +2923,40 @@ for (let i = 0; i < sandSize * 0.25; i++) {
 
 sandCtx.globalAlpha = 1.0;
 
-const wallImage = new Image();
-wallImage.src = "bricks.png";
-let wallTextureReady = false;
-wallImage.onload = () => (wallTextureReady = true);
+const assetList = [
+  { name: 'wallImage',       src: 'bricks.png'      },
+  { name: 'lockedWallImage', src: 'locked_wall.png' },
+  { name: 'mapSprite',       src: 'map.png'         },
+];
 
-const mapSprite = new Image();
-mapSprite.src = "map.png";
-let mapSpriteReady = false;
-mapSprite.onload = () => (mapSpriteReady = true);
+function preloadImage(name, src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload  = () => resolve({ name, img });
+    img.onerror = () => reject(new Error(`Failed to load ${src}`));
+    img.src     = src;
+  });
+}
 
-const lockedWallImage = new Image();
-let lockedWallTextureReady = false;
-lockedWallImage.onload = () => (lockedWallTextureReady = true);
-lockedWallImage.src = "locked_wall.png";
+Promise
+  .all(assetList.map(a => preloadImage(a.name, a.src)))
+  .then(assets => {
+    // 1) Stick each loaded Image onto window[name]
+    assets.forEach(({ name, img }) => window[name] = img);
+
+    // 2) Flip your “ready” flags so render() knows it can draw textures
+    wallTextureReady       = true;
+    lockedWallTextureReady = true;
+    mapSpriteReady         = true;
+
+    // 3) Now it’s safe to build the maze and start the loop
+    createMaze();
+    requestAnimationFrame(loop);
+  })
+  .catch(err => {
+    console.error("Asset loading error:", err);
+    drawUnsupportedOverlay("Error loading textures — please reload.");
+  });
 
 function loop(now) {
   const dt = (now - lastTime) / 1000;
@@ -2961,8 +2980,19 @@ function loop(now) {
   draw();
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
-
+ Promise
+      .all(assetList.map(a => preloadImage(a.name, a.src)))
+      .then(assets => {
+        assets.forEach(({name, img}) => window[name] = img);
+        wallTextureReady = lockedWallTextureReady = mapSpriteReady = ghostImageReady = true;
+        // Now that everything’s loaded:
+        createMaze();
+        requestAnimationFrame(loop);
+      })
+      .catch(err => {
+        console.error("Failed to load assets:", err);
+        drawUnsupportedOverlay("Error loading textures — please reload.");
+      });
 </script>
 </body>
 </html>
