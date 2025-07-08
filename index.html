@@ -1749,6 +1749,17 @@ function lerpColor(a, b, t) {
 
 const MAX_DT = 0.033;
 let lastTime = performance.now();
+
+let isPlaying = true;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    isPlaying = false;
+  } else {
+    lastTime = performance.now();  // reset timer
+    isPlaying = true;
+  }
+});
+
 let stepTimer = 0;
 let headBob = 0;
 
@@ -2942,20 +2953,28 @@ function preloadImage(name, src) {
 Promise
   .all(assetList.map(a => preloadImage(a.name, a.src)))
   .then(assets => {
-    // put each loaded Image into the *local* variables your draw() uses:
+    // assign your images as before…
     for (let { name, img } of assets) {
       if (name === 'wallImage')       wallImage       = img;
       if (name === 'lockedWallImage') lockedWallImage = img;
       if (name === 'mapSprite')       mapSprite       = img;
-      // …and if you ever need ghostImage, mapTexture, etc. add them here too
     }
 
-    // now flip all your “ready” flags
+    // 2) Pre-warm GPU textures
+    const off = document.createElement("canvas");
+    off.width  = Math.max(wallImage.width, lockedWallImage.width, mapSprite.width);
+    off.height = Math.max(wallImage.height, lockedWallImage.height, mapSprite.height);
+    const offCtx = off.getContext("2d");
+    offCtx.drawImage(wallImage,       0, 0);
+    offCtx.drawImage(lockedWallImage, 0, 0);
+    offCtx.drawImage(mapSprite,       0, 0);
+
+    // now flip your ready flags…
     wallTextureReady       = true;
     lockedWallTextureReady = true;
     mapSpriteReady         = true;
 
-    // finally start the game
+    // …and start the game!
     createMaze();
     requestAnimationFrame(loop);
   })
@@ -2965,27 +2984,15 @@ Promise
   });
 
 function loop(now) {
+  requestAnimationFrame(loop);
+  if (!isPlaying) return;           // <-- don’t do anything if hidden
+
   const dt = (now - lastTime) / 1000;
   lastTime = now;
-  update(dt);
-  if (mapPopupTimer > 0) mapPopupTimer -= dt;
-
-  let px = Math.floor(player.x / CELL_SIZE);
-  let py = Math.floor(player.y / CELL_SIZE);
-  seenCells.add(py + "," + px);
-
-  if (
-    !playerPath.length ||
-    playerPath[playerPath.length - 1][0] !== px ||
-    playerPath[playerPath.length - 1][1] !== py
-  ) {
-    playerPath.push([px, py]);
-    if (playerPath.length > PATH_MAX) playerPath.shift();
-  }
-
+  update(Math.min(dt, MAX_DT));     // clamp your timestep
   draw();
-  requestAnimationFrame(loop);
 }
+
 </script>
 </body>
 </html>
