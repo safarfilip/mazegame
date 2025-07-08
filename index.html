@@ -93,6 +93,7 @@ let seenCells = new Set();
 let playerPath = [];
 const PATH_MAX = 40;
 
+let canShowLocked = false;
 let mapCell = null;
 let mapCollected = false;
 let hasLeftMapCell = false;
@@ -1650,6 +1651,7 @@ canvas.onclick = () => {
 canvas.addEventListener("mousedown", () => {
   if (showStartMenu) {
     showStartMenu = false;
+    setTimeout(() => { canShowLocked = true; }, 300);
     canvas.requestPointerLock();
   }
 });
@@ -2894,7 +2896,7 @@ for (let i = 0; i < sandSize * 0.25; i++) {
   sandCtx.stroke();
   sandCtx.restore();
 
-  if (!vaultUnlocked) {
+  if (canShowLocked && !vaultUnlocked) {
     const ex = (endCell.x + 0.5) * CELL_SIZE;
     const ey = (endCell.y + 0.5) * CELL_SIZE;
     const dx = ex - player.x;
@@ -2940,15 +2942,20 @@ function preloadImage(name, src) {
 Promise
   .all(assetList.map(a => preloadImage(a.name, a.src)))
   .then(assets => {
-    // 1) Stick each loaded Image onto window[name]
-    assets.forEach(({ name, img }) => window[name] = img);
+    // put each loaded Image into the *local* variables your draw() uses:
+    for (let { name, img } of assets) {
+      if (name === 'wallImage')       wallImage       = img;
+      if (name === 'lockedWallImage') lockedWallImage = img;
+      if (name === 'mapSprite')       mapSprite       = img;
+      // …and if you ever need ghostImage, mapTexture, etc. add them here too
+    }
 
-    // 2) Flip your “ready” flags so render() knows it can draw textures
+    // now flip all your “ready” flags
     wallTextureReady       = true;
     lockedWallTextureReady = true;
     mapSpriteReady         = true;
 
-    // 3) Now it’s safe to build the maze and start the loop
+    // finally start the game
     createMaze();
     requestAnimationFrame(loop);
   })
@@ -2979,19 +2986,6 @@ function loop(now) {
   draw();
   requestAnimationFrame(loop);
 }
- Promise
-      .all(assetList.map(a => preloadImage(a.name, a.src)))
-      .then(assets => {
-        assets.forEach(({name, img}) => window[name] = img);
-        wallTextureReady = lockedWallTextureReady = mapSpriteReady = ghostImageReady = true;
-        // Now that everything’s loaded:
-        createMaze();
-        requestAnimationFrame(loop);
-      })
-      .catch(err => {
-        console.error("Failed to load assets:", err);
-        drawUnsupportedOverlay("Error loading textures — please reload.");
-      });
 </script>
 </body>
 </html>
