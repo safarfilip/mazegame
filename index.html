@@ -1,0 +1,2968 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>The Maze Game</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="icon" href="key.png" type="image/png" />
+  <link rel="shortcut icon" href="key.png" type="image/png" />
+  <style>
+    body { margin: 0; overflow: hidden; background: #030303; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<script>
+
+let showStartMenu = true;
+const canvas = document.createElement("canvas");
+Object.assign(document.body.style, { margin: 0, overflow: "hidden" });
+document.body.appendChild(canvas);
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = true;
+
+const MIN_WIDTH = 960;
+const MIN_HEIGHT = 600;
+
+function isScreenSupported() {
+  return canvas.width >= MIN_WIDTH && canvas.height >= MIN_HEIGHT;
+}
+function isZoomSupported() {
+  return Math.abs(window.outerWidth / window.innerWidth - 1) < 0.01;
+}
+
+function drawUnsupportedOverlay(msg) {
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const baseFontPx = 36;
+  const scale = 1 / window.devicePixelRatio;
+  let fontPx = baseFontPx * scale;
+
+  ctx.font = `${fontPx}px 'Press Start 2P', monospace`;
+  const maxTextWidth = canvas.width * 0.9;
+  let metrics = ctx.measureText(msg);
+  if (metrics.width > maxTextWidth) {
+    fontPx *= maxTextWidth / metrics.width;
+    ctx.font = `${fontPx}px 'Press Start 2P', monospace`;
+  }
+
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "#000";
+  ctx.shadowBlur = 4;
+  ctx.fillText(msg, canvas.width / 2, canvas.height / 2);
+  ctx.restore();
+}
+
+function defaultResize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    defaultResize();
+    updateInventoryScale();
+    inventoryHudX = null;
+    inventoryHudY = null;
+    if (typeof resetKeys === "function") resetKeys();
+  }, 200);
+});
+
+document.addEventListener("fullscreenchange", () => {
+  if (typeof resetKeys === "function") resetKeys();
+});
+
+defaultResize();
+
+const CELL_SIZE = 50;
+let COLS = Math.floor(canvas.width / CELL_SIZE) * 2;
+let ROWS = Math.floor(canvas.height / CELL_SIZE) * 2;
+
+let startCell = { x: 0, y: 0 },
+  endCell = { x: 0, y: 0 };
+let flashlightOn = true;
+let rooms = [];
+let exitLocked = true;
+let seenCells = new Set();
+let playerPath = [];
+const PATH_MAX = 40;
+
+let mapCell = null;
+let mapCollected = false;
+let hasLeftMapCell = false;
+let mapPopupTimer = 0;
+let mapPopupDuration = 4;
+let mapPopupText = "";
+let playerHealth = 100;
+let MAX_HEALTH = 100;
+let magicka = 100;
+let MAX_MAGICKA = 100;
+let inventoryOpen = false;
+let inventory = [];
+let inventoryMouse = { x: 0, y: 0 };
+let currentBlueQuote = null;
+let inventoryHudX = null,
+  inventoryHudY = null;
+let inventoryHudDrag = false;
+let inventoryHudDragOffset = { x: 0, y: 0 };
+let inventoryScale = 1;
+const INVENTORY_DESIGN_WIDTH = 1200;
+const INVENTORY_DESIGN_HEIGHT = 800;
+let textPanelOpen = false;
+let textHudX = null,
+  textHudY = null;
+let textHudDrag = false;
+let textHudDragOffset = { x: 0, y: 0 };
+let textMouse = { x: 0, y: 0 };
+let currentTextQuote = null;
+let textPanelButtons = [];
+let enableMovement = true;
+let godmode = false;
+let wayPath = [];
+let showPathEnabled = false;
+let gameCompleted = false;
+let currentSpeed = 0;
+let showSpeed = false;
+let keepCommands = false;
+let vaultUnlocked = false;
+let vaultOpened = false;
+let isJumping = false;
+let jumpVelocity = 0;
+const gravity = 0.5;
+const jumpStrength = 8;
+
+function getEnabledConsoleStates() {
+  const states = [];
+  if (godmode) states.push("godmode");
+  if (showPathEnabled) states.push("showway");
+  if (showSpeed) states.push("showspeed");
+  return states;
+}
+
+let consoleOpen = false;
+let consoleInput = "";
+let consoleHistory = [];
+let consoleHistoryIndex = -1;
+let consoleOutput = "";
+let lastConsoleBlink = 0;
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === ";") {
+    consoleOpen = !consoleOpen;
+    if (consoleOpen) {
+      consoleInput = "";
+      const activeStates = [];
+      if (keepCommands) activeStates.push("keepcommands");
+      if (godmode) activeStates.push("godmode");
+      if (typeof noclip !== "undefined" && noclip) activeStates.push("noclip");
+      if (typeof showPathEnabled !== "undefined" && showPathEnabled)
+        activeStates.push("show way");
+      if (typeof showSpeed !== "undefined" && showSpeed)
+        activeStates.push("showspeed");
+
+      consoleOutput =
+        activeStates.length > 0
+          ? "Active: " + activeStates.join(", ")
+          : "No active toggles.";
+
+      canvas.style.cursor = "default";
+    } else {
+      canvas.requestPointerLock();
+      canvas.style.cursor = "none";
+    }
+  }
+
+  if (consoleOpen) {
+    if (e.key === "Escape") {
+      consoleOpen = false;
+      canvas.requestPointerLock();
+      canvas.style.cursor = "none";
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key === "Enter") {
+      processConsoleCommand(consoleInput);
+      if (consoleInput.trim()) {
+        consoleHistory.push(consoleInput);
+        if (consoleHistory.length > 50) consoleHistory.shift();
+      }
+      consoleHistoryIndex = -1;
+      consoleInput = "";
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      if (consoleHistory.length > 0) {
+        if (consoleHistoryIndex === -1)
+          consoleHistoryIndex = consoleHistory.length - 1;
+        else if (consoleHistoryIndex > 0) consoleHistoryIndex--;
+        consoleInput = consoleHistory[consoleHistoryIndex] || "";
+      }
+      e.preventDefault();
+
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      if (consoleHistory.length > 0 && consoleHistoryIndex !== -1) {
+        consoleHistoryIndex++;
+        if (consoleHistoryIndex >= consoleHistory.length) {
+          consoleHistoryIndex = -1;
+          consoleInput = "";
+        } else {
+          consoleInput = consoleHistory[consoleHistoryIndex] || "";
+        }
+      }
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key === "Backspace") {
+      consoleInput = consoleInput.slice(0, -1);
+      e.preventDefault();
+      return;
+    }
+
+    if (e.code === "Space" && !isJumping) {
+      isJumping = true;
+      jumpVelocity = -jumpStrength;
+    }
+
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (consoleInput.length < 60) {
+        consoleInput += e.key;
+      }
+      e.preventDefault();
+      return;
+    }
+  }
+  if (e.key.toLowerCase() === "e") {
+    const centerRay = castRay(player.angle);
+    if (
+      centerRay &&
+      centerRay.typeOfWall === "locked" &&
+      centerRay.dist < CELL_SIZE * 0.75
+    ) {
+      const cell = maze[centerRay.row][centerRay.col];
+      if (!cell.unlocking) {
+        cell.unlocking = true;
+        cell.fade = 1.0;
+      }
+    }
+  }
+});
+
+function processConsoleCommand(cmd) {
+  console.log("processConsoleCommand called with:", cmd);
+  cmd = cmd.trim();
+  if (!cmd) {
+    consoleOutput = "";
+    return;
+  }
+
+  if (cmd.toLowerCase() === "help") {
+    consoleOutput = "Commands: godmode, showway, showspeed, quest finish 1";
+  } else if (cmd.toLowerCase() === "keepcommands") {
+    keepCommands = !keepCommands;
+    consoleOutput =
+      "Keep commands " + (keepCommands ? "enabled." : "disabled.");
+  } else if (cmd.toLowerCase() === "showway") {
+    showPathEnabled = !showPathEnabled;
+    if (!showPathEnabled) wayPath = [];
+    consoleOutput = "Path to exit " + (showPathEnabled ? "shown." : "hidden.");
+  } else if (cmd.toLowerCase() === "showspeed") {
+    showSpeed = !showSpeed;
+    consoleOutput = "Speed display " + (showSpeed ? "enabled." : "disabled.");
+  } else if (cmd.toLowerCase() === "godmode") {
+    godmode = !godmode;
+    if (godmode) {
+      STAMINA_USE_PER_SEC = 0;
+      STAMINA_REGEN_PER_SEC = 0;
+      consoleOutput = "Godmode enabled.";
+    } else {
+      STAMINA_USE_PER_SEC = 20;
+      STAMINA_REGEN_PER_SEC = 25;
+      consoleOutput = "Godmode disabled.";
+    }
+  } else if (cmd.toLowerCase() === "quest finish 1") {
+    if (!mapCollected) {
+      mapCollected = true;
+      mapPopupText = "Map of the Maze obtained";
+      mapPopupTimer = mapPopupDuration;
+      completeObjective("Obtain the Maze map");
+      addObjective("Escape the Maze");
+      addToInventory({ name: "Maze Map", img: mapSprite });
+      consoleOutput = `"Obtain the Maze map" completed. Map collected and next quest started.`;
+    } else {
+      consoleOutput = "Map quest already completed.";
+    }
+  } else {
+    consoleOutput = "Unknown command. Type 'help'";
+  }
+  consoleInput = "";
+  consoleHistoryIndex = -1;
+}
+
+function findPathToEnd() {
+  const start = {
+    x: Math.floor(player.x / CELL_SIZE),
+    y: Math.floor(player.y / CELL_SIZE),
+  };
+  const goal = endCell;
+  const visited = new Set();
+  const queue = [{ x: start.x, y: start.y, path: [] }];
+
+  while (queue.length) {
+    const { x, y, path } = queue.shift();
+    const key = `${x},${y}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+
+    if (x === goal.x && y === goal.y) return path;
+
+    const cell = maze[y]?.[x];
+    if (!cell) continue;
+
+    const directions = [
+      { dx: 0, dy: -1, wall: 0 },
+      { dx: 1, dy: 0, wall: 1 },
+      { dx: 0, dy: 1, wall: 2 },
+      { dx: -1, dy: 0, wall: 3 },
+    ];
+
+    for (const { dx, dy, wall } of directions) {
+      if (!cell.walls[wall]) {
+        const nx = x + dx,
+          ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS) {
+          queue.push({ x: nx, y: ny, path: [...path, { x: nx, y: ny }] });
+        }
+      }
+    }
+  }
+
+  return [];
+}
+
+function drawConsole() {
+  if (!consoleOpen) return;
+
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.font = "14px 'Press Start 2P', monospace";
+  ctx.fillStyle = "#e0f1ff";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "#000";
+  ctx.shadowBlur = 2;
+
+  const showCursor = performance.now() % 1200 < 700;
+  let inputLine = "> " + consoleInput + (showCursor ? "_" : " ");
+
+  ctx.fillText(inputLine, 32, 32);
+
+  if (consoleOutput) {
+    ctx.font = "12px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#95c8b8";
+    ctx.fillText(consoleOutput, 32, 62);
+  }
+
+  ctx.restore();
+}
+
+const ghost = {
+  x: 0,
+  y: 0,
+  targetX: 0,
+  targetY: 0,
+  speed: 38,
+  visible: false,
+  alpha: 0.0,
+  timer: 0,
+};
+
+function updateInventoryScale() {
+  const scaleW = canvas.width / INVENTORY_DESIGN_WIDTH;
+  const scaleH = canvas.height / INVENTORY_DESIGN_HEIGHT;
+  inventoryScale = Math.min(scaleW, scaleH, 1);
+}
+
+document.addEventListener("pointerlockchange", () => {
+  if (
+    document.pointerLockElement !== canvas &&
+    !inventoryOpen &&
+    !textPanelOpen &&
+    !vaultOpened
+  ) {
+    canvas.requestPointerLock();
+  }
+});
+
+if (!window._inventoryHudHandlerAdded) {
+  canvas.addEventListener("mousedown", function onClick(e) {
+    if (!inventoryOpen) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left,
+      my = e.clientY - rect.top;
+
+    const slots = 10,
+      cols = 5,
+      rows = 2;
+    const cellSize = 92,
+      gap = 20,
+      pad = 44,
+      borderRadius = 32,
+      closeSize = 38,
+      avatarR = 46;
+    const statBlockW = 320,
+      avatarToStatsSpacing = 40,
+      rightPad = pad;
+    const totalW = Math.max(
+      590,
+      pad + statBlockW + avatarToStatsSpacing + avatarR * 2 + rightPad,
+      cols * cellSize + (cols - 1) * gap + pad * 2,
+    );
+    const statBlockH = 40 * 2 + 24 + 6;
+    const vBlockH = Math.max(statBlockH, avatarR * 2);
+    const quoteH = 32,
+      verticalSpacing = 24;
+    const invSectionH = rows * cellSize + (rows - 1) * gap;
+    const totalH =
+      pad +
+      vBlockH +
+      verticalSpacing +
+      quoteH +
+      verticalSpacing +
+      invSectionH +
+      pad;
+
+    const invX =
+      typeof inventoryHudX === "number"
+        ? inventoryHudX
+        : (canvas.width - totalW) / 2;
+    const invY =
+      typeof inventoryHudY === "number"
+        ? inventoryHudY
+        : (canvas.height - totalH) / 2;
+
+    const closeX = invX + totalW - closeSize - 8;
+    const closeY = invY + 8;
+
+    const cx = closeX + closeSize / 2,
+      cy = closeY + closeSize / 2;
+    if (Math.hypot(mx - cx, my - cy) < closeSize * 0.6) {
+      inventoryOpen = false;
+      canvas.requestPointerLock();
+      canvas.style.cursor = "none";
+      return;
+    }
+
+    const headerHeight = 64;
+    if (
+      mx >= invX &&
+      mx <= invX + totalW &&
+      my >= invY &&
+      my <= invY + headerHeight
+    ) {
+      inventoryHudDrag = true;
+      inventoryHudDragOffset.x = mx - invX;
+      inventoryHudDragOffset.y = my - invY;
+      return;
+    }
+
+    if (
+      !inventoryHudDrag &&
+      (mx < invX || mx > invX + totalW || my < invY || my > invY + totalH)
+    ) {
+      inventoryOpen = false;
+      canvas.requestPointerLock();
+      canvas.style.cursor = "none";
+    }
+  });
+  window._inventoryHudHandlerAdded = true;
+}
+
+canvas.addEventListener("mousemove", (e) => {
+  if (inventoryOpen) {
+    inventoryMouse.x = e.offsetX;
+    inventoryMouse.y = e.offsetY;
+  }
+});
+
+canvas.addEventListener(
+  "mousedown",
+  (e) => {
+    if (inventoryOpen) {
+      e.preventDefault();
+
+      return false;
+    }
+  },
+  true,
+);
+
+document.addEventListener("pointerlockchange", () => {
+  if (
+    !inventoryOpen &&
+    !textPanelOpen &&
+    document.pointerLockElement !== canvas
+  ) {
+    canvas.requestPointerLock();
+  }
+});
+
+if (!window._inventoryHudMoveAdded) {
+  canvas.addEventListener("mousemove", function (e) {
+    if (inventoryHudDrag && inventoryOpen) {
+      const rect = canvas.getBoundingClientRect();
+
+      updateInventoryScale();
+      const s = inventoryScale;
+      const cols = 5,
+        rows = 2;
+      const cellSize = 92 * s,
+        gap = 20 * s,
+        pad = 44 * s,
+        avatarR = 46 * s;
+      const statBlockW = 320 * s;
+      const avatarToStatsSpacing = 40 * s,
+        rightPad = pad;
+      const totalW = Math.max(
+        590 * s,
+        pad + statBlockW + avatarToStatsSpacing + avatarR * 2 + rightPad,
+        cols * cellSize + (cols - 1) * gap + pad * 2,
+      );
+      const lineH = 40 * s,
+        statGapTop = 24 * s;
+      const statBlockH = lineH * 3 + statGapTop + 6 * s;
+      const vBlockH = Math.max(statBlockH, avatarR * 2);
+      const quoteH = 32 * s,
+        verticalSpacing = 24 * s;
+      const invSectionH = rows * cellSize + (rows - 1) * gap;
+      const totalH =
+        pad +
+        vBlockH +
+        verticalSpacing +
+        quoteH +
+        verticalSpacing +
+        invSectionH +
+        pad;
+      inventoryHudX = e.clientX - rect.left - inventoryHudDragOffset.x;
+      inventoryHudY = e.clientY - rect.top - inventoryHudDragOffset.y;
+
+      inventoryHudX = Math.max(
+        0,
+        Math.min(inventoryHudX, canvas.width - totalW),
+      );
+      inventoryHudY = Math.max(
+        0,
+        Math.min(inventoryHudY, canvas.height - totalH),
+      );
+    }
+  });
+
+  canvas.addEventListener("mouseup", function (e) {
+    inventoryHudDrag = false;
+  });
+  window._inventoryHudMoveAdded = true;
+}
+
+function addToInventory(item) {
+  inventory.push(item);
+}
+
+function drawCharacterScreen() {
+  updateInventoryScale();
+
+  const s = inventoryScale;
+  const slots = 10,
+    cols = 5,
+    rows = 2;
+  const cellSize = 92 * s,
+    gap = 20 * s,
+    pad = 44 * s,
+    borderRadius = 32 * s,
+    closeSize = 38 * s,
+    avatarR = 46 * s;
+  const nameFont = `bold ${36 * s}px 'Press Start 2P', monospace`;
+  const statFont = `${20 * s}px 'Press Start 2P', monospace`;
+  const lineH = 40 * s;
+  const statGapTop = 24 * s;
+  const statBlockW = 320 * s;
+  const statBlockH = lineH * 3 + statGapTop + 6 * s;
+  const avatarBlockW = avatarR * 2;
+  const rightPad = pad;
+  const avatarToStatsSpacing = 40 * s;
+  const totalW = Math.max(
+    590 * s,
+    pad + statBlockW + avatarToStatsSpacing + avatarBlockW + rightPad,
+    cols * cellSize + (cols - 1) * gap + pad * 2,
+  );
+  const vBlockH = Math.max(statBlockH, avatarR * 2);
+  const quoteH = 32 * s,
+    verticalSpacing = 24 * s;
+  const invSectionH = rows * cellSize + (rows - 1) * gap;
+  const totalH =
+    pad +
+    vBlockH +
+    verticalSpacing +
+    quoteH +
+    verticalSpacing +
+    invSectionH +
+    pad;
+  const invX =
+    typeof inventoryHudX === "number"
+      ? inventoryHudX
+      : (canvas.width - totalW) / 2;
+  const invY =
+    typeof inventoryHudY === "number"
+      ? inventoryHudY
+      : (canvas.height - totalH) / 2;
+  ctx.save();
+  ctx.globalAlpha = 0.97;
+  ctx.fillStyle = "#2c2321";
+  ctx.beginPath();
+  ctx.roundRect(invX, invY, totalW, totalH, borderRadius);
+  ctx.fill();
+  ctx.lineWidth = 3.5 * s;
+  ctx.strokeStyle = "#796b58";
+  ctx.stroke();
+  ctx.restore();
+  const closeX = invX + totalW - closeSize - 8 * s;
+  const closeY = invY + 8 * s;
+  ctx.save();
+  ctx.font = `bold ${30 * s}px Arial`;
+  ctx.fillStyle = "#d9c7a4";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "#000b";
+  ctx.shadowBlur = 2 * s;
+  ctx.globalAlpha = 0.93;
+  ctx.fillText("×", closeX + closeSize / 2, closeY + closeSize / 2 + 1 * s);
+  ctx.restore();
+  const vBlockY = invY + pad;
+  const textX = invX + pad;
+  const textY = vBlockY;
+  const avatarCX = invX + totalW - rightPad - avatarR;
+  const avatarCY = vBlockY + vBlockH / 2;
+  ctx.save();
+  ctx.font = nameFont;
+  ctx.fillStyle = "#f3d081";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "#0007";
+  ctx.shadowBlur = 5 * s;
+  ctx.fillText("Filip", textX, textY);
+  ctx.restore();
+  ctx.save();
+  ctx.font = statFont;
+  ctx.fillStyle = "#ebdec2";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "none";
+  ctx.shadowBlur = 0;
+  ctx.fillText(`Health:   ${MAX_HEALTH}`, textX, textY + 36 * s + statGapTop);
+  ctx.restore();
+  ctx.save();
+  ctx.font = statFont;
+  ctx.fillStyle = "#ebdec2";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(
+    `Stamina:  ${MAX_STAMINA}`,
+    textX,
+    textY + 36 * s + statGapTop + lineH,
+  );
+  ctx.restore();
+  ctx.save();
+  ctx.font = statFont;
+  ctx.fillStyle = "#ebdec2";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(
+    `Magicka:  ${MAX_MAGICKA}`,
+    textX,
+    textY + 36 * s + statGapTop + lineH * 2,
+  );
+  ctx.restore();
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(avatarCX, avatarCY, avatarR, 0, 2 * Math.PI);
+  ctx.fillStyle = "#ccb18a";
+  ctx.globalAlpha = 0.84;
+  ctx.fill();
+  ctx.lineWidth = 3.5 * s;
+  ctx.strokeStyle = "#826d41";
+  ctx.globalAlpha = 1;
+  ctx.stroke();
+  ctx.font = `${26 * s}px 'Press Start 2P', monospace`;
+  ctx.fillStyle = "#77512a";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("?", avatarCX, avatarCY + 1 * s);
+  ctx.restore();
+  let y = vBlockY + vBlockH + verticalSpacing;
+  ctx.save();
+  const quoteFontPx = 16 * s;
+  ctx.font = `${quoteFontPx}px 'Press Start 2P', monospace`;
+  ctx.fillStyle = "#9ed5e3";
+  ctx.textAlign = "center";
+  const quoteBoxWidth = totalW - pad * 2;
+  const quoteLineHeight = quoteFontPx * 1.28;
+  const quoteX = invX + totalW / 2;
+  const quoteY = y + quoteFontPx * 1.25;
+  let quote = currentBlueQuote || "";
+  const lines = [];
+  if (quote) {
+    let words = quote.split(" ");
+    let line = "";
+    for (let i = 0; i < words.length; i++) {
+      let testLine = line + words[i] + " ";
+      let testWidth = ctx.measureText(testLine).width;
+      if (testWidth > quoteBoxWidth && line) {
+        lines.push(line.trim());
+        line = words[i] + " ";
+      } else {
+        line = testLine;
+      }
+    }
+    if (line) lines.push(line.trim());
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], quoteX, quoteY + i * quoteLineHeight);
+    }
+  }
+  ctx.restore();
+  y += quoteLineHeight * (lines.length || 1) + verticalSpacing;
+  let hovered = null;
+  for (let i = 0; i < slots; i++) {
+    const col = i % cols,
+      row = Math.floor(i / cols);
+    const x = invX + pad + col * (cellSize + gap);
+    const slotY = y + row * (cellSize + gap);
+
+    let isHover =
+      inventoryMouse.x >= x &&
+      inventoryMouse.x < x + cellSize &&
+      inventoryMouse.y >= slotY &&
+      inventoryMouse.y < slotY + cellSize;
+
+    ctx.save();
+    ctx.globalAlpha = isHover ? 1 : 0.89;
+    ctx.beginPath();
+    ctx.roundRect(x, slotY, cellSize, cellSize, 14 * s);
+    ctx.strokeStyle = isHover ? "#a89c87" : "#58462f";
+    ctx.lineWidth = isHover ? 3.2 * s : 2 * s;
+    ctx.stroke();
+
+    const item = inventory[i];
+    if (item && item.img && item.img.width && item.img.height) {
+      ctx.globalAlpha = isHover ? 1 : 0.82;
+      ctx.drawImage(
+        item.img,
+        x + 13 * s,
+        slotY + 13 * s,
+        cellSize - 26 * s,
+        cellSize - 26 * s,
+      );
+    }
+    ctx.restore();
+
+    if (isHover && item && item.name)
+      hovered = { x, y: slotY, w: cellSize, h: cellSize, name: item.name };
+  }
+
+  if (hovered) {
+    ctx.save();
+    ctx.globalAlpha = 0.99;
+    ctx.font = `${14 * s}px 'Press Start 2P', monospace`;
+    const textWidth = ctx.measureText(hovered.name).width + 18 * s;
+    const tooltipH = 25 * s;
+
+    const tx = hovered.x + hovered.w / 2 - textWidth / 2;
+    const ty = hovered.y - tooltipH - 8 * s;
+    ctx.fillStyle = "#473826";
+    ctx.strokeStyle = "#a6977c";
+    ctx.lineWidth = 2 * s;
+    ctx.beginPath();
+    ctx.roundRect(tx, ty, textWidth, tooltipH, 7 * s);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#ebdec2";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "#0007";
+    ctx.shadowBlur = 2 * s;
+    ctx.fillText(hovered.name, hovered.x + hovered.w / 2, ty + tooltipH / 2);
+    ctx.restore();
+  }
+}
+function drawTextPanel() {
+  updateInventoryScale();
+  const s = inventoryScale;
+
+  const panelX = 0;
+  const panelY = 0;
+  const totalW = canvas.width;
+  const totalH = canvas.height;
+
+  ctx.save();
+  const blurCanvas = document.createElement("canvas");
+  blurCanvas.width = canvas.width;
+  blurCanvas.height = canvas.height;
+  const blurCtx = blurCanvas.getContext("2d");
+  blurCtx.drawImage(canvas, 0, 0);
+  blurCtx.filter = "blur(22px)";
+  ctx.globalAlpha = 1.0;
+  ctx.drawImage(blurCanvas, 0, 0);
+  ctx.globalAlpha = 1.0;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+  ctx.fillRect(panelX, panelY, totalW, totalH);
+  ctx.restore();
+
+  if (!gameCompleted) {
+    ctx.save();
+    ctx.font = `bold ${14 * s}px 'Press Start 2P', monospace`;
+    ctx.fillStyle = "#e9f0ff";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.shadowColor = "#000a";
+    ctx.shadowBlur = 4;
+    ctx.globalAlpha = 1;
+    ctx.fillText('Press ";" in the game to open console.', 36 * s, 26 * s);
+    ctx.restore();
+  }
+
+  const buttonFont = `${24 * s}px 'Press Start 2P', monospace`;
+  const buttonTexts = gameCompleted ? [] : ["Resume"];
+  const buttonSpacing = 60 * s;
+
+  ctx.save();
+  ctx.font = buttonFont;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "top";
+  ctx.shadowColor = "#0006";
+  ctx.shadowBlur = 4;
+
+  textPanelButtons = [];
+  const buttonRightMargin = totalW * 0.05;
+  const buttonBottomMargin = totalH * 0.05;
+  const buttonX = totalW - buttonRightMargin;
+  const buttonStartY =
+    totalH - buttonBottomMargin - buttonSpacing * buttonTexts.length;
+
+  for (let i = 0; i < buttonTexts.length; i++) {
+    const text = buttonTexts[i];
+    const y = buttonStartY + i * buttonSpacing;
+
+    const textWidth = ctx.measureText(text).width;
+    const x = buttonX - textWidth;
+
+    const isHover =
+      textMouse.x >= x &&
+      textMouse.x <= x + textWidth &&
+      textMouse.y >= y &&
+      textMouse.y <= y + 32 * s;
+
+    ctx.fillStyle = isHover ? "#ffe5a0" : "#f3d081";
+    ctx.fillText(text, buttonX, y);
+
+    textPanelButtons.push({
+      text,
+      x,
+      y,
+      w: textWidth,
+      h: 32 * s,
+    });
+  }
+
+  if (gameCompleted) {
+    ctx.save();
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.002);
+    const restartText = "Click here to play again";
+    ctx.font = `bold ${18 * s}px 'Press Start 2P', monospace`;
+    const textWidth = ctx.measureText(restartText).width;
+    const restartX = totalW / 2;
+    const restartY = totalH / 2 + 30 * s;
+
+    const isHover =
+      textMouse.x >= restartX - textWidth / 2 &&
+      textMouse.x <= restartX + textWidth / 2 &&
+      textMouse.y >= restartY &&
+      textMouse.y <= restartY + 32 * s;
+
+    const dimColor = "#d4af61";
+    const brightColor = "#f9d887";
+    function lerpColor(a, b, t) {
+      let ah = parseInt(a.slice(1), 16),
+        bh = parseInt(b.slice(1), 16);
+      let ar = (ah >> 16) & 255,
+        ag = (ah >> 8) & 255,
+        ab = ah & 255;
+      let br = (bh >> 16) & 255,
+        bg = (bh >> 8) & 255,
+        bb = bh & 255;
+      let rr = Math.round(ar + (br - ar) * t),
+        rg = Math.round(ag + (bg - ag) * t),
+        rb = Math.round(ab + (bb - ab) * t);
+      return `rgb(${rr},${rg},${rb})`;
+    }
+    const glowColor = lerpColor(dimColor, brightColor, pulse);
+    ctx.shadowColor = glowColor;
+    ctx.shadowBlur = 6 + pulse * 6;
+    ctx.fillStyle = glowColor;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.globalAlpha = 1;
+    ctx.fillText(restartText, restartX, restartY);
+    textPanelButtons.push({
+      text: "Restart",
+      x: restartX - textWidth / 2,
+      y: restartY,
+      w: textWidth,
+      h: 32 * s,
+    });
+    ctx.restore();
+  }
+  ctx.restore();
+
+  if (currentTextQuote) {
+    ctx.save();
+    const maxW = totalW * 0.8;
+    ctx.font = `bold ${28 * s}px 'Press Start 2P', monospace`;
+    ctx.fillStyle = "#9ed5e3";
+    ctx.textAlign = "center";
+    ctx.shadowColor = "#0007";
+    ctx.shadowBlur = 2;
+    wrapText(
+      ctx,
+      currentTextQuote,
+      totalW / 2,
+      totalH / 2 - 40 * s,
+      maxW,
+      34 * s,
+    );
+    ctx.restore();
+  }
+}
+
+function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = text.split(" ");
+  let line = "";
+  let lines = [];
+  for (let n = 0; n < words.length; n++) {
+    let testLine = line + words[n] + " ";
+    let metrics = ctx.measureText(testLine);
+    let testWidth = metrics.width;
+    if (testWidth > maxWidth && n > 0) {
+      lines.push(line);
+      line = words[n] + " ";
+    } else {
+      line = testLine;
+    }
+  }
+  lines.push(line);
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i].trim(), x, y + i * lineHeight);
+  }
+  return lines.length;
+}
+
+let stamina = 100;
+const MAX_STAMINA = 100;
+let STAMINA_USE_PER_SEC = 20;
+let STAMINA_REGEN_PER_SEC = 25;
+let staminaCooldown = 0;
+
+let objectives = [{ text: "Obtain the Maze map", completed: false }];
+
+function addObjective(text) {
+  objectives.push({ text, completed: false });
+}
+
+function completeObjective(text) {
+  let obj = objectives.find(
+    (o) => o.text.toLowerCase().includes(text.toLowerCase()) && !o.completed,
+  );
+  if (obj) obj.completed = true;
+}
+
+function getActiveObjectives() {
+  return objectives.filter((o) => !o.completed);
+}
+
+function drawMiniMap() {
+  if (!mapCollected) return;
+
+  const yObjectives = Math.floor(canvas.height * 0.3);
+  const topGap = yObjectives * 0.15;
+  const miniDiameter = yObjectives * 0.7;
+  const radius = miniDiameter / 2;
+  const margin = 18;
+  const centerX = margin + radius;
+  const centerY = topGap + radius;
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+  ctx.clip();
+
+  ctx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
+
+  const TILES_SHOWN = 11;
+  const TILE_SIZE = (radius * 2) / TILES_SHOWN;
+  const px = player.x / CELL_SIZE;
+  const py = player.y / CELL_SIZE;
+  const half = TILES_SHOWN / 2;
+
+  for (let mapY = Math.floor(py - half); mapY < Math.ceil(py + half); mapY++) {
+    for (
+      let mapX = Math.floor(px - half);
+      mapX < Math.ceil(px + half);
+      mapX++
+    ) {
+      if (mapX < 0 || mapY < 0 || mapX >= COLS || mapY >= ROWS) continue;
+      const cell = maze[mapY][mapX];
+      const cellCenterX = mapX + 0.5;
+      const cellCenterY = mapY + 0.5;
+      const dx = cellCenterX - px;
+      const dy = cellCenterY - py;
+      const mx = centerX + dx * TILE_SIZE;
+      const my = centerY + dy * TILE_SIZE;
+
+      ctx.fillStyle = /* cell.walls.every((w) => w) ? "#23190f" : */ "#cebc8c";
+      ctx.fillRect(
+        mx - TILE_SIZE / 2,
+        my - TILE_SIZE / 2,
+        TILE_SIZE,
+        TILE_SIZE,
+      );
+
+      ctx.strokeStyle = "#92774b";
+      ctx.lineWidth = Math.max(2, TILE_SIZE * 0.16);
+      if (cell.walls[0]) {
+        ctx.beginPath();
+        ctx.moveTo(mx - TILE_SIZE / 2, my - TILE_SIZE / 2);
+        ctx.lineTo(mx + TILE_SIZE / 2, my - TILE_SIZE / 2);
+        ctx.stroke();
+      }
+      if (cell.walls[1]) {
+        ctx.beginPath();
+        ctx.moveTo(mx + TILE_SIZE / 2, my - TILE_SIZE / 2);
+        ctx.lineTo(mx + TILE_SIZE / 2, my + TILE_SIZE / 2);
+        ctx.stroke();
+      }
+      if (cell.walls[2]) {
+        ctx.beginPath();
+        ctx.moveTo(mx - TILE_SIZE / 2, my + TILE_SIZE / 2);
+        ctx.lineTo(mx + TILE_SIZE / 2, my + TILE_SIZE / 2);
+        ctx.stroke();
+      }
+      if (cell.walls[3]) {
+        ctx.beginPath();
+        ctx.moveTo(mx - TILE_SIZE / 2, my - TILE_SIZE / 2);
+        ctx.lineTo(mx - TILE_SIZE / 2, my + TILE_SIZE / 2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  if (wayPath.length > 0) {
+    ctx.fillStyle = "#ffffff";
+    for (let i = 0; i < wayPath.length; i++) {
+      const step = wayPath[i];
+      const dx = (step.x + 0.5 - px) * TILE_SIZE;
+      const dy = (step.y + 0.5 - py) * TILE_SIZE;
+      const mx = centerX + dx;
+      const my = centerY + dy;
+      ctx.beginPath();
+      ctx.arc(mx, my, TILE_SIZE * 0.12, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+  }
+
+  drawMiniMarker(startCell, "#41c34c");
+  drawMiniMarker(endCell, "#e2453b");
+
+  ctx.save();
+  ctx.translate(centerX, centerY);
+  ctx.rotate(player.angle + Math.PI / 2);
+  ctx.fillStyle = "#1942a8";
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, -TILE_SIZE * 0.45);
+  ctx.lineTo(TILE_SIZE * 0.28, TILE_SIZE * 0.28);
+  ctx.lineTo(-TILE_SIZE * 0.28, TILE_SIZE * 0.28);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  if (ghost.visible) {
+    const ghostCellX = ghost.x / CELL_SIZE;
+    const ghostCellY = ghost.y / CELL_SIZE;
+    const dx = ghostCellX - px;
+    const dy = ghostCellY - py;
+    const mx = centerX + dx * TILE_SIZE;
+    const my = centerY + dy * TILE_SIZE;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(mx, my, Math.max(4, TILE_SIZE * 0.32), 0, 2 * Math.PI);
+    ctx.globalAlpha = 0.93;
+    ctx.fillStyle = "#8cfffc";
+    ctx.shadowColor = "#1effff";
+    ctx.shadowBlur = 6;
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.font = `${TILE_SIZE * 0.9}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#044";
+    ctx.fillText("👻", mx, my + 1);
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius - 1.5, 0, 2 * Math.PI);
+  ctx.lineWidth = 3.4;
+  ctx.strokeStyle = "#9e8655";
+  ctx.shadowColor = "#0006";
+  ctx.shadowBlur = 4;
+  ctx.globalAlpha = 0.99;
+  ctx.stroke();
+  ctx.restore();
+}
+function drawMiniMarker(cell, color) {
+  const yObjectives = Math.floor(canvas.height * 0.3);
+  const topGap = yObjectives * 0.15;
+  const miniDiameter = yObjectives * 0.7;
+  const radius = miniDiameter / 2;
+  const margin = 18;
+  const centerX = margin + radius;
+  const centerY = topGap + radius;
+
+  const px = player.x / CELL_SIZE;
+  const py = player.y / CELL_SIZE;
+
+  const TILES_SHOWN = 11;
+  const TILE_SIZE = (radius * 2) / TILES_SHOWN;
+
+  const cellCenterX = cell.x + 0.5;
+  const cellCenterY = cell.y + 0.5;
+  const dx = cellCenterX - px;
+  const dy = cellCenterY - py;
+  const mx = centerX + dx * TILE_SIZE;
+  const my = centerY + dy * TILE_SIZE;
+
+  ctx.save();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(mx, my, TILE_SIZE * 0.25, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+const player = {
+  x: CELL_SIZE / 2,
+  y: CELL_SIZE / 2,
+  radius: 5,
+  speed: 50,
+  angle: 0,
+  pitch: 0,
+  pitchAngle: 0,
+  jumping: false,
+  jumpTime: 0,
+  jumpOffset: 0,
+};
+
+const JUMP_HEIGHT = 0.11;
+const JUMP_DURATION = 0.38;
+const keys = { w: false, a: false, s: false, d: false, Shift: false };
+
+document.addEventListener("keydown", (e) => {
+  if (vaultOpened) {
+    if (e.key.toLowerCase() === "i" || e.key.toLowerCase() === "p") {
+      e.preventDefault();
+    }
+    return;
+  }
+  if (textPanelOpen && e.key.toLowerCase() !== "p") {
+    e.preventDefault();
+    return;
+  }
+  if (consoleOpen) {
+    if (e.key.toLowerCase() === "i" || e.key.toLowerCase() === "p") {
+      e.preventDefault();
+      return;
+    }
+  }
+
+  if (e.key.toLowerCase() === "p") {
+    if (gameCompleted) {
+      return;
+    }
+
+    textPanelOpen = !textPanelOpen;
+    enableMovement = !textPanelOpen;
+
+    if (textPanelOpen) {
+      const blueQuotes = [];
+      currentTextQuote =
+        blueQuotes[Math.floor(Math.random() * blueQuotes.length)];
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      canvas.style.cursor = "default";
+    } else {
+      canvas.requestPointerLock();
+      canvas.style.cursor = "none";
+    }
+  }
+
+  if (e.key.toLowerCase() === "i") {
+    inventoryOpen = !inventoryOpen;
+    if (inventoryOpen) {
+      const blueQuotes = [
+        '"Lost in the Maze, but never alone."',
+        '"Every path leads to a new beginning."',
+        '"When in doubt, keep moving forward."',
+        '"Bravery is finding light in darkness."',
+        '"Not all who wander are lost."',
+        '"Courage is one step ahead of fear."',
+        '"Trust your instincts. The exit exists."',
+        '"Even walls can be doors."',
+        '"The Maze tests, but it teaches too."',
+        '"Hope is the strongest map."',
+        '"Sometimes, the wrong turn is the right one."',
+        '"Listen for silence—it hides the answers."',
+        '"A single step can change everything."',
+        '"Fear shrinks as you walk toward it."',
+        '"Every wall was built to be passed."',
+        '"The longer the path, the greater the story."',
+        '"Patience finds exits where haste finds dead ends."',
+        '"You’re closer than you think."',
+        '"Dead ends are just lessons in disguise."',
+        '"The darkest corners often hold the brightest hopes."',
+        '"No maze lasts forever."',
+        '"Your courage leaves footprints others will find."',
+        '"There’s beauty in being lost."',
+        '"Maps can’t chart every secret."',
+        '"Even the maze has a heart."',
+        '"What you seek may be seeking you."',
+        '"Walls cannot contain wonder."',
+        '"Light travels farther when it’s carried inside."',
+        '"Every exit is an entrance to somewhere else."',
+        '"Rest if you must, but never quit the maze."',
+        '"Trust what you’ve learned since your first step."',
+        '"Echoes are proof you are not alone."',
+        '"Every passage was carved with a reason."',
+        '"The exit is never where you expect, but always where you need."',
+        '"Keep your eyes open—some paths are only visible in darkness."',
+      ];
+
+      currentBlueQuote =
+        blueQuotes[Math.floor(Math.random() * blueQuotes.length)];
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      canvas.style.cursor = "default";
+    } else {
+      canvas.requestPointerLock();
+      canvas.style.cursor = "none";
+    }
+  }
+
+  if ((e.code === "Space" || e.key === " ") && !player.jumping) {
+    const JUMP_COST = 5;
+    if (godmode || stamina >= JUMP_COST) {
+      player.jumping = true;
+      player.jumpTime = 0;
+
+      if (!godmode) {
+        stamina -= JUMP_COST;
+        stamina = Math.max(0, stamina);
+        staminaCooldown = 1.0;
+      }
+    } else {
+    }
+  }
+
+  if (e.key === "Escape" || e.key === "q" || e.key === "Q") resetKeys();
+});
+
+canvas.addEventListener("mousemove", (e) => {
+  if (textPanelOpen) {
+    textMouse.x = e.offsetX;
+    textMouse.y = e.offsetY;
+  }
+});
+textHudDrag = false;
+canvas.addEventListener("mousedown", function (e) {
+  if (!textPanelOpen) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  for (let btn of textPanelButtons) {
+    if (
+      mx >= btn.x &&
+      mx <= btn.x + btn.w &&
+      my >= btn.y &&
+      my <= btn.y + btn.h
+    ) {
+      if (btn.text === "Resume") {
+        textPanelOpen = false;
+        enableMovement = true;
+        canvas.requestPointerLock();
+        canvas.style.cursor = "none";
+      } else if (btn.text === "Restart") {
+        createMaze();
+        textPanelOpen = false;
+        enableMovement = true;
+        gameCompleted = false;
+        mapCollected = false;
+        exitLocked = true;
+        stamina = MAX_STAMINA;
+        magicka = MAX_MAGICKA;
+        playerHealth = MAX_HEALTH;
+        inventory = [];
+        objectives = [{ text: "Obtain the Maze map", completed: false }];
+        canvas.requestPointerLock();
+        canvas.style.cursor = "none";
+
+        if (!keepCommands) {
+          godmode = false;
+          showSpeed = false;
+          showPathEnabled = false;
+        } else {
+          if (godmode) {
+            STAMINA_USE_PER_SEC = 0;
+            STAMINA_REGEN_PER_SEC = 0;
+          }
+        }
+      }
+    }
+  }
+});
+canvas.addEventListener("mousedown", function (e) {
+  if (!inventoryOpen) return;
+});
+canvas.addEventListener("mousemove", function (e) {
+  if (textHudDrag && textPanelOpen) {
+    const rect = canvas.getBoundingClientRect();
+    const s = inventoryScale;
+    const totalW = 600 * s;
+    const totalH = 300 * s;
+    textHudX = e.clientX - rect.left - textHudDragOffset.x;
+    textHudY = e.clientY - rect.top - textHudDragOffset.y;
+    textHudX = Math.max(0, Math.min(textHudX, canvas.width - totalW));
+    textHudY = Math.max(0, Math.min(textHudY, canvas.height - totalH));
+  }
+});
+canvas.addEventListener("mouseup", function (e) {
+  textHudDrag = false;
+});
+
+let maze;
+
+function generateMazePrim() {
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      maze[y][x].visited = false;
+      maze[y][x].walls = [true, true, true, true];
+      maze[y][x].wallTypes = ["normal", "normal", "normal", "normal"];
+    }
+  }
+  let frontier = [];
+  let startX = Math.floor(Math.random() * COLS),
+    startY = Math.floor(Math.random() * ROWS);
+  maze[startY][startX].visited = true;
+  for (const [dx, dy, dir] of [
+    [0, -1, 0],
+    [1, 0, 1],
+    [0, 1, 2],
+    [-1, 0, 3],
+  ]) {
+    const nx = startX + dx,
+      ny = startY + dy;
+    if (nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS)
+      frontier.push({ x: nx, y: ny, fromX: startX, fromY: startY, dir });
+  }
+
+  while (frontier.length) {
+    let idx = Math.floor(Math.random() * frontier.length);
+    let { x, y, fromX, fromY, dir } = frontier.splice(idx, 1)[0];
+    if (!maze[y][x].visited) {
+      maze[y][x].visited = true;
+      maze[y][x].walls[(dir + 2) % 4] = false;
+      maze[fromY][fromX].walls[dir] = false;
+      for (const [dx, dy, ndir] of [
+        [0, -1, 0],
+        [1, 0, 1],
+        [0, 1, 2],
+        [-1, 0, 3],
+      ]) {
+        const nx = x + dx,
+          ny = y + dy;
+        if (
+          nx >= 0 &&
+          ny >= 0 &&
+          nx < COLS &&
+          ny < ROWS &&
+          !maze[ny][nx].visited
+        )
+          frontier.push({ x: nx, y: ny, fromX: x, fromY: y, dir: ndir });
+      }
+    }
+  }
+}
+
+function addLoops(loopFactor = 0.14) {
+  let wallsToRemove = Math.floor(COLS * ROWS * loopFactor);
+  for (let i = 0; i < wallsToRemove; i++) {
+    let x = Math.floor(Math.random() * (COLS - 1));
+    let y = Math.floor(Math.random() * (ROWS - 1));
+    let dir = Math.random() < 0.5 ? 1 : 2;
+    if (dir === 1 && maze[y][x].walls[1] && maze[y][x + 1].walls[3]) {
+      maze[y][x].walls[1] = false;
+      maze[y][x + 1].walls[3] = false;
+    } else if (dir === 2 && maze[y][x].walls[2] && maze[y + 1][x].walls[0]) {
+      maze[y][x].walls[2] = false;
+      maze[y + 1][x].walls[0] = false;
+    }
+  }
+}
+
+function addRooms(roomCount = 3) {
+  for (let r = 0; r < roomCount; r++) {
+    let w = Math.floor(Math.random() * 2) + 2;
+    let h = Math.floor(Math.random() * 2) + 2;
+    let x = Math.floor(Math.random() * (COLS - w - 2)) + 1;
+    let y = Math.floor(Math.random() * (ROWS - h - 2)) + 1;
+    for (let j = 0; j < h; j++) {
+      for (let i = 0; i < w; i++) {
+        let cell = maze[y + j][x + i];
+
+        if (i > 0) {
+          cell.walls[3] = false;
+          maze[y + j][x + i - 1].walls[1] = false;
+        }
+        if (j > 0) {
+          cell.walls[0] = false;
+          maze[y + j - 1][x + i].walls[2] = false;
+        }
+        if (i < w - 1) {
+          cell.walls[1] = false;
+        }
+        if (j < h - 1) {
+          cell.walls[2] = false;
+        }
+      }
+    }
+  }
+}
+
+function findFurthestCells(maze) {
+  function bfs(sx, sy) {
+    let visited = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+    let queue = [{ x: sx, y: sy, dist: 0 }];
+    visited[sy][sx] = true;
+    let furthest = { x: sx, y: sy, dist: 0 };
+    while (queue.length) {
+      let { x, y, dist } = queue.shift();
+      if (dist > furthest.dist) furthest = { x, y, dist };
+      for (let dir = 0; dir < 4; dir++) {
+        if (!maze[y][x].walls[dir]) {
+          let nx = x + [0, 1, 0, -1][dir];
+          let ny = y + [-1, 0, 1, 0][dir];
+          if (
+            nx >= 0 &&
+            ny >= 0 &&
+            nx < COLS &&
+            ny < ROWS &&
+            !visited[ny][nx]
+          ) {
+            visited[ny][nx] = true;
+            queue.push({ x: nx, y: ny, dist: dist + 1 });
+          }
+        }
+      }
+    }
+    return furthest;
+  }
+
+  let sx = 0,
+    sy = 0;
+  let a = bfs(sx, sy);
+  let b = bfs(a.x, a.y);
+  return { start: { x: a.x, y: a.y }, end: { x: b.x, y: b.y } };
+}
+
+function createMaze() {
+  COLS = Math.floor(canvas.width / CELL_SIZE);
+  ROWS = Math.floor(canvas.height / CELL_SIZE);
+  maze = Array.from({ length: ROWS }, () =>
+    Array.from({ length: COLS }, () => ({
+      visited: false,
+      walls: [true, true, true, true],
+      wallTypes: ["normal", "normal", "normal", "normal"],
+    })),
+  );
+
+  generateMazePrim();
+  addRooms(2 + Math.floor((COLS * ROWS) / 70));
+  addLoops(0.14);
+
+  function isValidStart(x, y, dir) {
+    const map = {
+      up: [0, -1, 0, 0],
+      right: [1, 0, 1, 1],
+      down: [0, 1, 2, 2],
+      left: [-1, 0, 3, 3],
+    };
+    const [dx, dy, w1, w2] = map[dir];
+    const nx1 = x + dx,
+      ny1 = y + dy;
+    const nx2 = x + dx * 2,
+      ny2 = y + dy * 2;
+    return (
+      x >= 0 &&
+      y >= 0 &&
+      x < COLS &&
+      y < ROWS &&
+      nx1 >= 0 &&
+      ny1 >= 0 &&
+      nx1 < COLS &&
+      ny1 < ROWS &&
+      nx2 >= 0 &&
+      ny2 >= 0 &&
+      nx2 < COLS &&
+      ny2 < ROWS &&
+      !maze[y][x].walls[w1] &&
+      !maze[ny1][nx1].walls[w1] &&
+      !maze[ny1][nx1].walls[w2] &&
+      !maze[ny2][nx2].walls[w2]
+    );
+  }
+
+  const dirs = [
+    { name: "up", angle: -Math.PI / 2 },
+    { name: "right", angle: 0 },
+    { name: "down", angle: Math.PI / 2 },
+    { name: "left", angle: Math.PI },
+  ];
+
+  let startCandidates = [];
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      for (let d of dirs) {
+        if (isValidStart(x, y, d.name)) {
+          startCandidates.push({ x, y, angle: d.angle });
+        }
+      }
+    }
+  }
+  if (!startCandidates.length) return createMaze();
+  let s = startCandidates[Math.floor(Math.random() * startCandidates.length)];
+  startCell = { x: s.x, y: s.y };
+  player.x = (s.x + 0.5) * CELL_SIZE;
+  player.y = (s.y + 0.5) * CELL_SIZE;
+  player.angle = s.angle;
+  player.pitchAngle = player.jumpOffset = 0;
+  player.jumping = false;
+
+  placeMapInMaze();
+  mapCollected = hasLeftMapCell = false;
+
+  const minDist = Math.hypot(COLS, ROWS) / 4;
+  let endCandidates = [];
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const dist = Math.hypot(x - startCell.x, y - startCell.y);
+      const cell = maze[y][x];
+
+      const openings = cell.walls.filter((w) => !w).length;
+      if (dist >= minDist && openings === 1) {
+        endCandidates.push({ x, y });
+      }
+    }
+  }
+  if (!endCandidates.length) {
+    console.warn("No valid end cell found; regenerating…");
+    return createMaze();
+  }
+  endCell = endCandidates[Math.floor(Math.random() * endCandidates.length)];
+  const endData = maze[endCell.y][endCell.x];
+
+  const entranceDir = endData.walls.findIndex((w) => !w);
+  endData.walls[entranceDir] = true;
+  endData.wallTypes[entranceDir] = "locked";
+  endData.lockedWallDir = entranceDir;
+}
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+createMaze();
+hasLeftMapCell = false;
+
+const STAR_COUNT = 180;
+const STAR_COLOR = ["#fff", "#b9d7ff", "#e5f0ff"];
+let stars = [];
+function generateStars() {
+  stars = [];
+  for (let i = 0; i < STAR_COUNT; i++) {
+    let azimuth = Math.random() * Math.PI * 2;
+    let elevation = ((Math.random() * Math.PI) / 2) * 0.94;
+    let r = Math.random() * 1.2 + 0.8;
+    let c = STAR_COLOR[(Math.random() * STAR_COLOR.length) | 0];
+    stars.push({ azimuth, elevation, r, c });
+  }
+}
+generateStars();
+
+["keydown", "keyup"].forEach((ev) =>
+  window.addEventListener(ev, (e) => {
+    let k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (keys[k] !== undefined) keys[k] = ev === "keydown";
+  }),
+);
+canvas.onclick = () => {
+  if (!inventoryOpen && !textPanelOpen) canvas.requestPointerLock();
+};
+
+canvas.addEventListener("mousedown", () => {
+  if (showStartMenu) {
+    showStartMenu = false;
+    canvas.requestPointerLock();
+  }
+});
+
+function lockChange() {
+  if (document.pointerLockElement === canvas)
+    document.addEventListener("mousemove", updateMouse);
+  else document.removeEventListener("mousemove", updateMouse);
+}
+document.addEventListener("pointerlockchange", lockChange);
+function updateMouse(e) {
+  player.angle = (player.angle + e.movementX * 0.0007) % (Math.PI * 2);
+  player.pitchAngle -= e.movementY * 0.002;
+  player.pitchAngle = Math.max(-1, Math.min(1, player.pitchAngle));
+}
+
+const wallShades = [1.0, 0.82, 0.7, 0.91];
+const WALL_COLOR = "#8a5a2c";
+
+function hitsWall(x, y) {
+  const col = Math.floor(x / CELL_SIZE),
+    row = Math.floor(y / CELL_SIZE);
+  if (col < 0 || row < 0 || col >= COLS || row >= ROWS) return true;
+  const cell = maze[row][col];
+  const rx = x - col * CELL_SIZE,
+    ry = y - row * CELL_SIZE;
+  return (
+    (cell.walls[0] && ry < player.radius) ||
+    (cell.walls[1] && rx > CELL_SIZE - player.radius) ||
+    (cell.walls[2] && ry > CELL_SIZE - player.radius) ||
+    (cell.walls[3] && rx < player.radius)
+  );
+}
+
+function castRay(a, fromX = player.x, fromY = player.y, maxDist = 1000) {
+  let d = 0;
+  while (d < maxDist) {
+    const tx = fromX + Math.cos(a) * d;
+    const ty = fromY + Math.sin(a) * d;
+    if (hitsWall(tx, ty)) {
+      const col = Math.floor(tx / CELL_SIZE),
+        row = Math.floor(ty / CELL_SIZE);
+      const cell = maze[row][col];
+      const rx = tx - col * CELL_SIZE,
+        ry = ty - row * CELL_SIZE;
+      let wallDir = -1;
+      if (cell.walls[0] && ry < player.radius) wallDir = 0;
+      else if (cell.walls[1] && rx > CELL_SIZE - player.radius) wallDir = 1;
+      else if (cell.walls[2] && ry > CELL_SIZE - player.radius) wallDir = 2;
+      else if (cell.walls[3] && rx < player.radius) wallDir = 3;
+
+      let tX = 0;
+      if (wallDir === 0 || wallDir === 2) tX = rx / CELL_SIZE;
+      else tX = ry / CELL_SIZE;
+      d = Math.round(d * 1000) / 1000;
+      let typeOfWall = maze[row][col].wallTypes[wallDir] || "normal";
+      if (
+        maze[row] &&
+        maze[row][col] &&
+        typeof maze[row][col].lockedWallDir !== "undefined" &&
+        maze[row][col].lockedWallDir === wallDir
+      ) {
+        typeOfWall = "locked";
+      }
+      return { dist: d, textureX: tX, wallDir, col, row, rx, ry, typeOfWall };
+    }
+    d += 0.5;
+  }
+  return null;
+}
+
+function hasLineOfSight(from, to) {
+  const dx = (to.x + 0.5) * CELL_SIZE - from.x;
+  const dy = (to.y + 0.5) * CELL_SIZE - from.y;
+  const angle = Math.atan2(dy, dx);
+  const dist = Math.hypot(dx, dy);
+  const hit = castRay(angle, from.x, from.y, dist + 1);
+  return !hit || hit.dist >= dist - 6;
+}
+
+function lerpColor(a, b, t) {
+  let ah = parseInt(a.slice(1), 16),
+    bh = parseInt(b.slice(1), 16);
+  let ar = (ah >> 16) & 255,
+    ag = (ah >> 8) & 255,
+    ab = ah & 255;
+  let br = (bh >> 16) & 255,
+    bg = (bh >> 8) & 255,
+    bb = bh & 255;
+  let rr = Math.round(ar + (br - ar) * t),
+    rg = Math.round(ag + (bg - ag) * t),
+    rb = Math.round(ab + (bb - ab) * t);
+  return `rgb(${rr},${rg},${rb})`;
+}
+
+const MAX_DT = 0.033;
+let lastTime = performance.now();
+let stepTimer = 0;
+let headBob = 0;
+
+function update(dt) {
+  dt = Math.min(dt, MAX_DT);
+  if (consoleOpen) return;
+
+  const distToEnd = Math.hypot(
+    player.x - (endCell.x + 0.5) * CELL_SIZE,
+    player.y - (endCell.y + 0.5) * CELL_SIZE,
+  );
+
+  if (!vaultUnlocked && distToEnd < CELL_SIZE * 0.8) {
+    //  do something
+  }
+
+  if (!vaultUnlocked && distToEnd < CELL_SIZE * 0.5) {
+    const dx = player.x - (endCell.x + 0.5) * CELL_SIZE;
+    const dy = player.y - (endCell.y + 0.5) * CELL_SIZE;
+    const pushBack = 8;
+
+    player.x += dx * 0.1 + (Math.random() - 0.5) * pushBack;
+    player.y += dy * 0.1 + (Math.random() - 0.5) * pushBack;
+  }
+
+  const cell = maze[endCell.y][endCell.x];
+  if (cell.unlocking) {
+    cell.fade -= dt;
+    if (cell.fade <= 0) {
+      const ld = cell.lockedWallDir;
+      cell.walls[ld] = false;
+      cell.wallTypes[ld] = "normal";
+      const dx = [0, 1, 0, -1][ld],
+        dy = [-1, 0, 1, 0][ld];
+      maze[endCell.y + dy][endCell.x + dx].walls[(ld + 2) % 4] = false;
+
+      delete cell.lockedWallDir;
+      delete cell.unlocking;
+      delete cell.fade;
+      vaultUnlocked = true;
+      console.log("Vault fully unlocked!");
+    }
+  }
+  if (player.jumping) {
+    player.jumpTime += dt;
+    const t = player.jumpTime / JUMP_DURATION;
+    if (t < 1) {
+      player.jumpOffset = Math.sin(Math.PI * t) * JUMP_HEIGHT;
+    } else {
+      player.jumpOffset = 0;
+      player.jumping = false;
+    }
+  } else {
+    player.jumpOffset = 0;
+  }
+
+  if (consoleOpen || !enableMovement) return;
+
+  const f = keys.w,
+    b = keys.s,
+    l = keys.a,
+    r = keys.d;
+  const runIntent = keys.Shift && f && !b && !l && !r;
+  let canSprint = stamina > 0 && runIntent;
+  let moveX = 0,
+    moveY = 0;
+  let moving = f || b || l || r;
+
+  if (f) {
+    moveX += Math.cos(player.angle);
+    moveY += Math.sin(player.angle);
+  }
+  if (b) {
+    moveX -= Math.cos(player.angle);
+    moveY -= Math.sin(player.angle);
+  }
+  if (l) {
+    moveX += Math.cos(player.angle - Math.PI / 2);
+    moveY += Math.sin(player.angle - Math.PI / 2);
+  }
+  if (r) {
+    moveX += Math.cos(player.angle + Math.PI / 2);
+    moveY += Math.sin(player.angle + Math.PI / 2);
+  }
+
+  const len = Math.hypot(moveX, moveY);
+  if (moving && len > 0.001) {
+    let speed = player.speed;
+    if (canSprint && player.jumping) {
+      speed = player.speed * 2.6;
+    } else if (canSprint) {
+      speed = player.speed * 2;
+    } else if (keys.Shift && (l || r)) {
+      speed = player.speed * 1.5;
+    }
+    const step = speed * dt;
+    moveX = (moveX / len) * step;
+    moveY = (moveY / len) * step;
+
+    let movedX = 0;
+    let movedY = 0;
+
+    if (!hitsWall(player.x + moveX, player.y)) {
+      player.x += moveX;
+      movedX = moveX;
+    }
+    if (!hitsWall(player.x, player.y + moveY)) {
+      player.y += moveY;
+      movedY = moveY;
+    }
+
+    const moved = Math.hypot(movedX, movedY);
+    currentSpeed = moved / dt;
+
+    if (moved > 0.01 && canSprint) {
+      stepTimer += dt * 10;
+      headBob = Math.sin(stepTimer * Math.PI) * 0.01;
+    } else {
+      headBob = 0;
+    }
+  } else {
+    headBob = 0;
+    currentSpeed = 0;
+  }
+
+  player.pitch = headBob;
+
+  if (godmode) {
+    stamina = MAX_STAMINA;
+    staminaCooldown = 0;
+  } else {
+    if (canSprint && moving) {
+      stamina -= 20 * dt;
+      stamina = Math.max(0, stamina);
+      staminaCooldown = 2.0;
+    } else {
+      if (staminaCooldown > 0) {
+        staminaCooldown -= dt;
+        if (staminaCooldown < 0) staminaCooldown = 0;
+      } else if (stamina < 100) {
+        stamina += 25 * dt;
+        stamina = Math.min(100, stamina);
+      }
+    }
+  }
+
+  if (!mapCollected && mapCell) {
+    const px = player.x / CELL_SIZE;
+    const py = player.y / CELL_SIZE;
+    const distFromMap =
+      Math.abs(px - (mapCell.x + 0.5)) < 0.36 &&
+      Math.abs(py - (mapCell.y + 0.5)) < 0.36;
+    if (!distFromMap) {
+      hasLeftMapCell = true;
+    }
+    if (hasLeftMapCell && distFromMap) {
+      mapCollected = true;
+      mapPopupText = "Map of the Maze obtained";
+      mapPopupTimer = mapPopupDuration;
+      completeObjective("Obtain the Maze map");
+      addObjective("Escape the Maze");
+      addToInventory({ name: "Maze Map", img: mapSprite });
+    }
+  }
+
+  const endPX = player.x / CELL_SIZE;
+  const endPY = player.y / CELL_SIZE;
+  const isAtEnd =
+    Math.abs(endPX - (endCell.x + 0.5)) < 0.36 &&
+    Math.abs(endPY - (endCell.y + 0.5)) < 0.36;
+
+  if (isAtEnd && !gameCompleted) {
+    gameCompleted = true;
+    textPanelOpen = true;
+    enableMovement = false;
+    currentTextQuote = "You escaped the Maze!\nWell done, explorer.";
+    canvas.style.cursor = "default";
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+  }
+
+  if (showPathEnabled) {
+    const cx = Math.floor(player.x / CELL_SIZE);
+    const cy = Math.floor(player.y / CELL_SIZE);
+    if (
+      maze?.[cy]?.[cx] !== undefined &&
+      maze?.[endCell.y]?.[endCell.x] !== undefined
+    ) {
+      wayPath = findPathToEnd();
+    }
+  }
+  if (!vaultUnlocked) {
+    const nextX = Math.floor(player.x / CELL_SIZE);
+    const nextY = Math.floor(player.y / CELL_SIZE);
+
+    if (nextX === endCell.x && nextY === endCell.y) {
+      const dx = player.x - (endCell.x + 0.5) * CELL_SIZE;
+      const dy = player.y - (endCell.y + 0.5) * CELL_SIZE;
+      const pushBack = 10;
+
+      player.x += dx * 0.06 + Math.random() * pushBack - pushBack / 2;
+      player.y += dy * 0.06 + Math.random() * pushBack - pushBack / 2;
+    }
+  }
+}
+function drawFloor() {
+  if (!floorTextureReady) return;
+  const fov = Math.PI / 2;
+  const halfH = canvas.height / 2;
+  const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+
+  for (let y = halfH; y < canvas.height; y++) {
+    const rayDir = (y - halfH) / viewDist;
+    const rowDist = (CELL_SIZE * 0.5) / rayDir;
+
+    const camX = Math.cos(player.angle),
+      camY = Math.sin(player.angle);
+    const planeX = -Math.sin(player.angle) * Math.tan(fov / 2);
+    const planeY = Math.cos(player.angle) * Math.tan(fov / 2);
+
+    for (let x = 0; x < canvas.width; x += 2) {
+      const cameraX = (2 * x) / canvas.width - 1;
+      const floorX = player.x / CELL_SIZE + camX + planeX * cameraX;
+      const floorY = player.y / CELL_SIZE + camY + planeY * cameraX;
+      const fx = Math.floor((floorX * rowDist) % floorImage.width);
+      const fy = Math.floor((floorY * rowDist) % floorImage.height);
+
+      ctx.drawImage(
+        floorImage,
+        (fx + floorImage.width) % floorImage.width,
+        (fy + floorImage.height) % floorImage.height,
+        1,
+        1,
+        x,
+        y,
+        2,
+        2,
+      );
+    }
+  }
+}
+
+function drawFlashlight() {
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-in";
+
+  let flicker = 0.18 + Math.random() * 0.08;
+  let beamX = canvas.width / 2 + (Math.random() - 0.5) * 22 * flicker;
+  let beamY = canvas.height / 2 + (Math.random() - 0.5) * 16 * flicker;
+  let beamRadius = canvas.width * (0.4 + Math.random() * 0.11 * flicker);
+
+  const gradient = ctx.createRadialGradient(
+    beamX,
+    beamY,
+    0,
+    beamX,
+    beamY,
+    beamRadius,
+  );
+  gradient.addColorStop(0.0, "rgba(255, 242, 210, 1)");
+  gradient.addColorStop(0.2, "rgba(255, 220, 140, 0.5)");
+  gradient.addColorStop(0.5, "rgba(80, 70, 30, 0.18)");
+  gradient.addColorStop(1.0, "rgba(0, 0, 0, 0)");
+
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
+function drawStartMenu() {
+  ctx.save();
+
+  let grad = ctx.createRadialGradient(
+    canvas.width / 2,
+    canvas.height / 2,
+    canvas.height * 0.2,
+    canvas.width / 2,
+    canvas.height / 2,
+    Math.max(canvas.width, canvas.height) * 0.74,
+  );
+  grad.addColorStop(0, "#191b21");
+  grad.addColorStop(0.65, "#121218");
+  grad.addColorStop(1, "#09080a");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let i = 0; i < 18; i++) {
+    let rx = Math.random();
+    let ry = Math.random();
+    if (Math.abs(rx - 0.5) < 0.23 && Math.abs(ry - 0.52) < 0.17) continue;
+    let starX = canvas.width * rx;
+    let starY = canvas.height * ry;
+    let r = 0.9 + 1.8 * Math.random();
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(starX, starY, r, 0, 2 * Math.PI);
+    ctx.globalAlpha = 0.13 + Math.random() * 0.21;
+    ctx.fillStyle = "#fffbe7";
+    ctx.shadowColor = "#fffbe7";
+    ctx.shadowBlur = 6 + 5 * Math.random();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  const title = "The Maze Game";
+  const titlePx = Math.round(Math.max(Math.min(canvas.width * 0.09, 96), 28));
+  ctx.font = `bold ${titlePx}px 'Press Start 2P', monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = "#142a49";
+  ctx.strokeText(title, canvas.width / 2, canvas.height * 0.44);
+
+  ctx.fillStyle = "#2999ff";
+  ctx.fillText(title, canvas.width / 2, canvas.height * 0.44);
+
+  let t = performance.now() * 0.002;
+  let alpha = 0.5 + 0.5 * Math.sin(t * 2);
+  const clickPx = Math.round(Math.max(Math.min(canvas.width * 0.03, 32), 13));
+  ctx.font = `bold ${clickPx}px 'Press Start 2P', monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = "#f9d887";
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = "#ffe49e";
+  ctx.fillText("Click to start", canvas.width / 2, canvas.height * 0.61);
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function draw() {
+  if (!isScreenSupported()) {
+    drawUnsupportedOverlay("Screen of this size is not supported.");
+    return;
+  }
+  if (!isZoomSupported()) {
+    drawUnsupportedOverlay("Zooming not supported.");
+    return;
+  }
+  if (showStartMenu) {
+    drawStartMenu();
+    return;
+  }
+  if (inventoryOpen || textPanelOpen || vaultOpened) {
+    canvas.style.cursor = "default";
+  } else {
+    canvas.style.cursor = "none";
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  let rays = Math.max(200, Math.min(480, Math.floor(canvas.width / 2.2)));
+  let rw = canvas.width / rays;
+  const fov = Math.PI / 2;
+  const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+  const halfH = canvas.height / 2;
+  const pitchOff =
+    (player.pitch + player.pitchAngle * 0.25 + player.jumpOffset) *
+    canvas.height;
+
+  let topColor = "#0d0d13";
+  let midColor = "#14141f";
+  let ceilingGrad = ctx.createLinearGradient(0, 0, 0, halfH + pitchOff);
+  ceilingGrad.addColorStop(0, topColor);
+  ceilingGrad.addColorStop(1, midColor);
+  ctx.fillStyle = ceilingGrad;
+  ctx.fillRect(0, 0, canvas.width, halfH + pitchOff);
+
+  for (const s of stars) {
+    let relAzimuth = s.azimuth - player.angle;
+    if (relAzimuth < -Math.PI) relAzimuth += 2 * Math.PI;
+    if (relAzimuth > Math.PI) relAzimuth -= 2 * Math.PI;
+    if (Math.abs(relAzimuth) > fov) continue;
+
+    let focalLength = canvas.width / (2 * Math.tan(fov / 2));
+    let screenX = canvas.width / 2 + Math.tan(relAzimuth) * focalLength;
+
+    let screenY = (1 - Math.sin(s.elevation)) * (halfH + pitchOff) * 0.98;
+
+    let edgeAlpha = Math.max(0, 1 - Math.abs(relAzimuth) / fov);
+
+    ctx.beginPath();
+    ctx.arc(screenX, screenY, s.r, 0, 2 * Math.PI);
+    ctx.globalAlpha = 0.75 * edgeAlpha + 0.18;
+    ctx.fillStyle = s.c;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1.0;
+
+  if (isJumping) {
+    player.jumpOffset += jumpVelocity;
+    jumpVelocity += gravity;
+
+    if (player.jumpOffset >= 0) {
+      player.jumpOffset = 0;
+      isJumping = false;
+    }
+  }
+
+  const gradFloor = ctx.createLinearGradient(0, halfH, 0, canvas.height);
+  gradFloor.addColorStop(0, "#1b140f");
+  gradFloor.addColorStop(1, "#0c0b09");
+  ctx.fillStyle = gradFloor;
+  ctx.fillRect(
+    0,
+    halfH + pitchOff,
+    canvas.width,
+    canvas.height - halfH - pitchOff,
+  );
+
+  for (let i = 0; i < rays; i++) {
+    const angle = player.angle - fov / 2 + (i / rays) * fov;
+    const ray = castRay(angle) || { dist: 1000, textureX: 0, wallDir: 0 };
+
+    const centerRay = castRay(player.angle);
+    if (
+      centerRay &&
+      centerRay.typeOfWall === "locked" &&
+      centerRay.dist < CELL_SIZE * 0.75
+    ) {
+      ctx.save();
+      ctx.font = "20px 'Press Start 2P', monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = "#ffe49e";
+      ctx.shadowColor = "#000";
+      ctx.shadowBlur = 4;
+      ctx.fillText(
+        "Press (E) to unlock",
+        canvas.width / 2,
+        canvas.height * 0.65,
+      );
+      ctx.restore();
+    }
+    const dp = ray.dist * Math.cos(angle - player.angle);
+    const wallH = (CELL_SIZE * viewDist) / dp;
+    const yTop = Math.floor(halfH - wallH / 2 + pitchOff);
+    const x = Math.floor(i * rw);
+
+    const fog = Math.min(ray.dist / 600, 1.0);
+
+    let fade = 1;
+    if (ray.typeOfWall === "locked") {
+      const cell = maze[ray.row][ray.col];
+      if (cell.fade !== undefined) {
+        fade = Math.max(0, cell.fade);
+      }
+    }
+
+    ctx.globalAlpha = (1 - 0.68 * fog) * fade;
+    ctx.imageSmoothingEnabled = false;
+
+    if (ray.typeOfWall === "locked" && lockedWallTextureReady) {
+      const texX = Math.floor(ray.textureX * lockedWallImage.width);
+      ctx.drawImage(
+        lockedWallImage,
+        texX,
+        0,
+        1,
+        lockedWallImage.height,
+        x,
+        yTop,
+        rw + 1,
+        wallH + 2,
+      );
+    } else if (wallTextureReady) {
+      const texX = Math.floor(ray.textureX * wallImage.width);
+      ctx.drawImage(
+        wallImage,
+        texX,
+        0,
+        1,
+        wallImage.height,
+        x,
+        yTop,
+        rw + 1,
+        wallH + 2,
+      );
+    } else {
+      ctx.fillStyle = "#2e1e15";
+      ctx.fillRect(x, yTop, rw + 1, wallH + 2);
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 1.0;
+  }
+
+  function drawGhost() {
+    if (!ghost.visible || ghost.alpha <= 0.01) return;
+    if (!ghostImageReady || !ghostImage.width || !ghostImage.height) return;
+
+    const dx = ghost.x - player.x;
+    const dy = ghost.y - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < CELL_SIZE * 1.3 || dist > CELL_SIZE * 15) return;
+
+    const angleTo = Math.atan2(dy, dx) - player.angle;
+    const fov = Math.PI / 2;
+    if (Math.abs(angleTo) > fov / 1.2) return;
+
+    const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+    const screenX = canvas.width / 2 + Math.tan(angleTo) * viewDist;
+
+    let yOnScreen = canvas.height * 0.63 + dist * 0.02;
+
+    const baseSize = Math.max(
+      CELL_SIZE * 2.4,
+      Math.min(CELL_SIZE * 5.5, (CELL_SIZE * 10) / (dist * 0.7)),
+    );
+
+    let flicker = 0.66 + Math.sin(performance.now() * 0.004 + dist) * 0.12;
+    ctx.save();
+    ctx.globalAlpha = ghost.alpha * flicker * 0.83;
+
+    const scale = baseSize / ghostImage.width;
+    ctx.drawImage(
+      ghostImage,
+      screenX - (ghostImage.width * scale) / 2,
+      yOnScreen - ghostImage.height * scale,
+      ghostImage.width * scale,
+      ghostImage.height * scale,
+    );
+
+    ctx.restore();
+  }
+  drawGhost();
+
+  function drawEyes() {
+    for (const e of spookyEyes) {
+      const dx = e.x - player.x,
+        dy = e.y - player.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < CELL_SIZE * 3.2) continue;
+      const angleTo = Math.atan2(dy, dx) - player.angle;
+      const fov = Math.PI / 2;
+      if (Math.abs(angleTo) > fov / 1.1) continue;
+
+      const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+      const screenX = canvas.width / 2 + Math.tan(angleTo) * viewDist;
+      let yOnScreen = canvas.height * 0.49 + dist * 0.05;
+
+      if (yOnScreen < canvas.height * 0.41) continue;
+
+      let alpha = Math.max(
+        0,
+        Math.min(
+          1,
+          e.timer < 0.4
+            ? e.timer / 0.4
+            : e.timer > 1.2
+              ? (2.2 - e.timer) / 1.0
+              : 1,
+        ),
+      );
+
+      if (e.blink && e.timer > 0.6 && (performance.now() / 180) % 2 > 1.2)
+        alpha *= 0.09;
+
+      ctx.save();
+      ctx.globalAlpha = 0.13 + 0.65 * alpha;
+      ctx.beginPath();
+      ctx.ellipse(screenX - 8, yOnScreen, 4, 8, 0, 0, 2 * Math.PI);
+      ctx.ellipse(screenX + 8, yOnScreen, 4, 8, 0, 0, 2 * Math.PI);
+      ctx.fillStyle = "#fff";
+      ctx.shadowColor = "#9ae6ff";
+      ctx.shadowBlur = 14;
+      ctx.fill();
+
+      ctx.globalAlpha *= 0.7;
+      ctx.beginPath();
+      ctx.ellipse(screenX - 8, yOnScreen + 4, 1.1, 2.5, 0, 0, 2 * Math.PI);
+      ctx.ellipse(screenX + 8, yOnScreen + 4, 1.1, 2.5, 0, 0, 2 * Math.PI);
+      ctx.fillStyle = "#041222";
+      ctx.shadowBlur = 0;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  drawFlashlight();
+
+  function drawGroundMapItem(cell) {
+    const px = player.x,
+      py = player.y;
+    const dx = (cell.x + 0.5) * CELL_SIZE - px;
+    const dy = (cell.y + 0.5) * CELL_SIZE - py;
+    const dist = Math.hypot(dx, dy);
+    if (dist > CELL_SIZE * 2.2) return;
+    if (!hasLineOfSight({ x: px, y: py }, cell)) return;
+
+    const angleTo = Math.atan2(dy, dx) - player.angle;
+    const fov = Math.PI / 2;
+    if (Math.abs(angleTo) > fov / 1.1) return;
+    const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+    const projX = canvas.width / 2 + Math.tan(angleTo) * viewDist;
+    let yOnScreen = canvas.height * 0.85 + dist * 0.08;
+
+    yOnScreen = Math.min(canvas.height - 24, Math.max(0, yOnScreen));
+
+    const baseSize = Math.max(CELL_SIZE * 1.1, 48);
+    const scale = 0.45 + 0.7 * (1 - dist / (CELL_SIZE * 2.2));
+    const w = baseSize * scale * 1.3;
+    const h = baseSize * scale * 0.6;
+
+    ctx.save();
+    ctx.globalAlpha = 0.97 * (1 - dist / (CELL_SIZE * 2.2));
+    ctx.translate(projX, yOnScreen);
+
+    ctx.transform(1, 0.28, 0, 0.48, 0, 0);
+
+    if (mapTextureReady) {
+      ctx.drawImage(mapTexture, -w / 2, -h / 2, w, h);
+    } else {
+      ctx.fillStyle = "#3482d9";
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.rect(-w / 2, -h / 2, w, h);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = "bold 16px Arial";
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.fillText("MAP", 0, 6);
+    }
+
+    ctx.restore();
+  }
+  function drawMapSprite() {
+    if (
+      !mapSpriteReady ||
+      !mapCell ||
+      mapCollected ||
+      !mapSprite.width ||
+      !mapSprite.height
+    )
+      return;
+
+    const mapX = (mapCell.x + 0.5) * CELL_SIZE;
+    const mapY = (mapCell.y + 0.5) * CELL_SIZE;
+
+    const dx = mapX - player.x;
+    const dy = mapY - player.y;
+    const dist = Math.hypot(dx, dy);
+
+    const angleTo = Math.atan2(dy, dx);
+    let relAngle = angleTo - player.angle;
+    relAngle = ((relAngle + Math.PI) % (2 * Math.PI)) - Math.PI;
+
+    const fov = Math.PI / 2;
+    if (Math.abs(relAngle) > fov / 2) return;
+
+    const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+    const screenX = canvas.width / 2 + Math.tan(relAngle) * viewDist;
+
+    const baseSize = CELL_SIZE * 2.4;
+    const size = baseSize * (1 / (dist / 80));
+    const clampedSize = Math.max(
+      CELL_SIZE * 0.6,
+      Math.min(size, CELL_SIZE * 2.8),
+    );
+
+    const spriteScale = 1;
+
+    const scaledSize = clampedSize * spriteScale;
+    const sampleCount = Math.floor(scaledSize);
+    const spriteLeft = screenX - scaledSize / 2;
+    const projectedWallHeight = (CELL_SIZE * viewDist) / dist;
+    const wallMidY =
+      canvas.height / 2 +
+      (player.pitch + player.pitchAngle * 0.25 + player.jumpOffset) *
+        canvas.height;
+    const screenY =
+      wallMidY -
+      projectedWallHeight / 2 +
+      projectedWallHeight * 0.5 +
+      Math.sin(performance.now() * 0.002) * 12;
+
+    if (screenX + scaledSize < 0 || screenX - scaledSize > canvas.width) return;
+
+    const visible = [];
+    for (let i = 0; i < sampleCount; i++) {
+      const sx = spriteLeft + (i / (sampleCount - 1)) * scaledSize;
+      const normX = 2 * (sx / canvas.width) - 1;
+      const rayAngle = player.angle + normX * (fov / 2);
+      const hit = castRay(rayAngle, player.x, player.y, dist);
+      visible[i] = !hit || hit.dist >= dist - 1;
+    }
+    const min = visible.findIndex((v) => v);
+    const max = visible.length - 1 - [...visible].reverse().findIndex((v) => v);
+    if (min === -1 || max === -1 || min >= max) return;
+
+    const fadePixels = 5;
+
+    ctx.save();
+    ctx.translate(screenX, screenY);
+
+    const scaledSliceW = scaledSize / sampleCount;
+
+    for (let i = min; i <= max; i++) {
+      const drawX = -scaledSize / 2 + i * scaledSliceW;
+      const srcX = mapSprite.width * (i / sampleCount);
+
+      let alpha = 1.0;
+      if (!visible[i]) {
+        if (i >= min - fadePixels && i < min) {
+          alpha = (i - (min - fadePixels)) / fadePixels;
+        } else if (i <= max + fadePixels && i > max) {
+          alpha = (max + fadePixels - i) / fadePixels;
+          continue;
+        }
+      } else {
+        if (i < min + fadePixels) {
+          alpha = (i - min) / fadePixels;
+        } else if (i > max - fadePixels) {
+          alpha = (max - i) / fadePixels;
+        }
+        alpha = Math.min(Math.max(alpha, 0.08), 1.0);
+      }
+
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(
+        mapSprite,
+        srcX,
+        0,
+        mapSprite.width / sampleCount,
+        mapSprite.height,
+        drawX,
+        -scaledSize / 2,
+        scaledSliceW,
+        scaledSize,
+      );
+    }
+
+    ctx.restore();
+  }
+
+  drawMapSprite();
+
+  function drawMapPopup() {
+    if (mapPopupTimer <= 0) return;
+
+    const yObjectives = Math.floor(canvas.height * 0.3);
+    const topGap = yObjectives * 0.15;
+    const miniDiameter = yObjectives * 0.7;
+    const radius = miniDiameter / 2;
+    const margin = 18;
+    const centerX = margin + radius;
+    const centerY = topGap + radius;
+    const TILES_SHOWN = 11;
+    const TILE_SIZE = (radius * 2) / TILES_SHOWN;
+
+    const t = mapPopupTimer;
+    const max = mapPopupDuration;
+    let alpha = 1;
+
+    if (t > max - 1.2) {
+      const fadeInT = (max - t) / 1.2;
+      alpha = fadeInT * fadeInT * (3 - 2 * fadeInT);
+    } else if (t < 1.2) {
+      const fadeOutT = t / 1.2;
+      alpha = fadeOutT * fadeOutT * (3 - 2 * fadeOutT);
+    }
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = "center";
+    ctx.shadowColor = "#000";
+    ctx.shadowBlur = 6;
+
+    const popupX = canvas.width / 2;
+    const popupY = Math.floor(canvas.height * 0.2);
+
+    const mainFontPx = Math.max(
+      20,
+      Math.min(Math.floor(canvas.height * 0.038), 32),
+    );
+    ctx.font = `${mainFontPx}px 'Press Start 2P', monospace`;
+    ctx.fillStyle = "#f0f4ff";
+    ctx.fillText(mapPopupText, popupX, popupY);
+
+    const subFontPx = Math.max(
+      12,
+      Math.min(Math.floor(canvas.height * 0.018), 16),
+    );
+    ctx.font = `${subFontPx}px 'Press Start 2P', monospace`;
+    ctx.fillStyle = "#c0c8e0";
+    ctx.fillText(
+      'Press "I" to open your inventory.',
+      popupX,
+      popupY + mainFontPx + 7,
+    );
+
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    ctx.rotate(player.angle - Math.PI / 2 + Math.PI);
+
+    ctx.beginPath();
+    ctx.arc(0, 0, TILE_SIZE * 0.26, 0, 2 * Math.PI);
+    ctx.shadowColor = "#4ec3ff";
+    ctx.shadowBlur = 14;
+    ctx.globalAlpha = 0.26 * alpha;
+    ctx.fillStyle = "#2046a8";
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+
+    ctx.beginPath();
+    ctx.arc(0, 0, TILE_SIZE * 0.19, 0, 2 * Math.PI);
+    ctx.fillStyle = "#274d99";
+    ctx.globalAlpha = 0.94 * alpha;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 2.3;
+    ctx.strokeStyle = "#f9f6e5";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(
+      -TILE_SIZE * 0.07,
+      -TILE_SIZE * 0.09,
+      TILE_SIZE * 0.055,
+      0,
+      2 * Math.PI,
+    );
+    ctx.fillStyle = "#a5d5ff";
+    ctx.globalAlpha = 0.33 * alpha;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.save();
+    ctx.shadowColor = "#ffeec0";
+    ctx.shadowBlur = 7;
+    ctx.beginPath();
+    ctx.moveTo(0, -TILE_SIZE * 0.47);
+    ctx.lineTo(-TILE_SIZE * 0.09, -TILE_SIZE * 0.15);
+    ctx.lineTo(-TILE_SIZE * 0.04, -TILE_SIZE * 0.18);
+    ctx.lineTo(0, -TILE_SIZE * 0.27);
+    ctx.lineTo(TILE_SIZE * 0.04, -TILE_SIZE * 0.18);
+    ctx.lineTo(TILE_SIZE * 0.09, -TILE_SIZE * 0.15);
+    ctx.closePath();
+    ctx.fillStyle = "#ffe39c";
+    ctx.globalAlpha = 0.99 * alpha;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = "#b19c4e";
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, TILE_SIZE * 0.07, 0, 2 * Math.PI);
+    ctx.fillStyle = "#ffe39c";
+    ctx.globalAlpha = 0.96 * alpha;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.restore();
+  }
+
+  const yObjectives = Math.floor(canvas.height * 0.3);
+  const topGap = yObjectives * 0.15;
+  const miniDiameter = yObjectives * 0.7;
+  const radius = miniDiameter / 2;
+  const margin = 18;
+  const centerX = margin + radius;
+  const centerY = topGap + radius;
+  drawMapPopup();
+  drawMiniMap();
+  drawObjectives();
+  drawMinimalStatBar("MG", magicka, MAX_MAGICKA, "#6a4fe6", 14);
+  drawMinimalStatBar("ST", stamina, MAX_STAMINA, "#68bb38", 56);
+  drawMinimalStatBar("HP", playerHealth, MAX_HEALTH, "#be3a32", 98);
+
+  if (showSpeed) {
+    ctx.save();
+    ctx.font = "16px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#a5ff95";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.shadowColor = "#000";
+    ctx.shadowBlur = 4;
+
+    const speedText = `Speed: ${Math.round(currentSpeed)} px/s`;
+    ctx.fillText(speedText, 35, canvas.height - 200);
+
+    ctx.restore();
+  }
+
+  function drawObjectives() {
+    const x = 30;
+    const y = Math.floor(canvas.height * 0.3);
+    const lineH = 29;
+    const titleFont = "bold 18px 'Press Start 2P', monospace";
+    const itemFont = "15px 'Press Start 2P', monospace";
+
+    let lines = Math.max(1, getActiveObjectives().length);
+    const boxW = 410,
+      boxH = 38 + lineH * lines;
+    ctx.save();
+
+    ctx.globalAlpha = 1;
+    ctx.font = titleFont;
+    ctx.fillStyle = "#f3d081";
+    ctx.textAlign = "left";
+    ctx.fillText("Objectives:", x, y);
+
+    ctx.font = itemFont;
+    ctx.fillStyle = "#f7e4bd";
+    let currY = y + lineH + 5;
+    const active = getActiveObjectives();
+    if (active.length === 0) {
+      ctx.fillStyle = "#aaa";
+      ctx.font = itemFont;
+      ctx.fillText("None", x, currY + 2);
+    } else {
+      for (const obj of active) {
+        ctx.fillStyle = "#f7e4bd";
+        ctx.fillText("• " + obj.text, x, currY);
+        currY += lineH;
+      }
+    }
+    ctx.restore();
+  }
+  if (inventoryOpen || textPanelOpen) {
+    canvas.style.cursor = "default";
+  } else {
+    canvas.style.cursor = "none";
+  }
+  if (inventoryOpen) {
+    drawCharacterScreen();
+  }
+  if (textPanelOpen) {
+    drawTextPanel();
+  }
+  drawConsole();
+}
+
+function placeMapInMaze() {
+  let options = [];
+
+  options.push({ x: startCell.x, y: startCell.y });
+
+  let directions = [
+    { dx: -1, dy: 0 },
+    { dx: 1, dy: 0 },
+    { dx: 0, dy: -1 },
+    { dx: 0, dy: 1 },
+  ];
+  const fov = Math.PI / 2;
+  directions = directions.filter((dir) => {
+    let ang = Math.atan2(dir.dy, dir.dx) - player.angle;
+    ang = ((ang + Math.PI) % (2 * Math.PI)) - Math.PI;
+    return Math.abs(ang) <= fov / 2;
+  });
+
+  for (let dir of directions) {
+    let nx = startCell.x + dir.dx;
+    let ny = startCell.y + dir.dy;
+    if (
+      nx >= 0 &&
+      ny >= 0 &&
+      nx < COLS &&
+      ny < ROWS &&
+      !maze[ny][nx].walls.every((w) => w)
+    ) {
+      options.push({ x: nx, y: ny });
+    }
+  }
+
+  mapCell = options[Math.floor(Math.random() * options.length)];
+  mapCollected = false;
+}
+
+function drawMinimalStatBar(label, value, max, color, yOffset) {
+  const valueText = godmode ? "inf." : `${Math.floor(value)}`;
+
+  let fontPx = 22;
+  ctx.font = `bold ${fontPx}px 'Press Start 2P', monospace`;
+  let valueW = ctx.measureText(valueText).width;
+
+  let labelFontPx = 19;
+  ctx.font = `bold ${labelFontPx}px 'Press Start 2P', monospace`;
+  const labelW = ctx.measureText(label).width;
+
+  const pad = 34;
+  let barW = Math.max(110, valueW + pad);
+  let barH = 32;
+
+  while (valueW > barW - 10 && fontPx > 14) {
+    fontPx -= 1;
+    ctx.font = `bold ${fontPx}px 'Press Start 2P', monospace`;
+    valueW = ctx.measureText(valueText).width;
+  }
+
+  const x = 32 + labelW + 16;
+  const y = canvas.height - yOffset - barH - 12;
+  const labelX = 32;
+  const labelY = y + barH / 2;
+
+  ctx.save();
+  ctx.font = `bold ${labelFontPx}px 'Press Start 2P', monospace`;
+  ctx.fillStyle = "#ffeecb";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "#0007";
+  ctx.shadowBlur = 2;
+  ctx.fillText(label, labelX, labelY);
+  ctx.restore();
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x, y, barW, barH, 9);
+  ctx.fillStyle = "#18140d";
+  ctx.globalAlpha = 0.96;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.roundRect(x, y, barW * (value / max), barH, 9);
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.8;
+  ctx.fill();
+
+  ctx.globalAlpha = 1;
+  ctx.font = `bold ${fontPx}px 'Press Start 2P', monospace`;
+  ctx.fillStyle = "#ffeecb";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "#0007";
+  ctx.shadowBlur = 3;
+  ctx.fillText(valueText, x + barW / 2, y + barH / 2);
+  ctx.restore();
+}
+
+function drawGroundLabel(cell, label, color) {
+  const px = player.x,
+    py = player.y;
+  const dx = (cell.x + 0.5) * CELL_SIZE - px;
+  const dy = (cell.y + 0.5) * CELL_SIZE - py;
+  const dist = Math.hypot(dx, dy);
+  if (dist > CELL_SIZE * 2.1) return;
+  if (!hasLineOfSight({ x: px, y: py }, cell)) return;
+
+  const angleTo = Math.atan2(dy, dx) - player.angle;
+  const fov = Math.PI / 2;
+  if (Math.abs(angleTo) > fov / 1.1) return;
+  const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+  const projX = canvas.width / 2 + Math.tan(angleTo) * viewDist;
+  let yOnScreen =
+    canvas.height * 0.72 +
+    dist * 0.08 -
+    player.pitchAngle * 120 -
+    player.jumpOffset * 2400;
+  yOnScreen = Math.min(canvas.height - 24, Math.max(0, yOnScreen));
+  ctx.save();
+  ctx.globalAlpha = 1 - Math.min(dist / (CELL_SIZE * 2.1), 0.92);
+  ctx.font = "bold 34px Arial";
+  ctx.textAlign = "center";
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = "#161718";
+  ctx.strokeText(label, projX, yOnScreen);
+  ctx.fillStyle = color;
+  ctx.fillText(label, projX, yOnScreen);
+  ctx.restore();
+}
+
+const sandSize = 96;
+const floorImage = document.createElement("canvas");
+floorImage.width = floorImage.height = sandSize;
+const sandCtx = floorImage.getContext("2d");
+
+sandCtx.fillStyle = "#ebd173";
+sandCtx.fillRect(0, 0, sandSize, sandSize);
+
+let imageData = sandCtx.getImageData(0, 0, sandSize, sandSize);
+let d = imageData.data;
+for (let i = 0; i < d.length; i += 4) {
+  let v = (Math.random() - 0.5) * 14;
+  d[i] = Math.min(255, Math.max(0, d[i] + v));
+  d[i + 1] = Math.min(255, Math.max(0, d[i + 1] + v));
+  d[i + 2] = Math.min(255, Math.max(0, d[i + 2] + v));
+}
+sandCtx.putImageData(imageData, 0, 0);
+
+for (let i = 0; i < sandSize * 5; i++) {
+  const x = Math.random() * sandSize;
+  const y = Math.random() * sandSize;
+
+  if (Math.random() < 0.18) {
+    let rockR = Math.random() * 5 + 3;
+    sandCtx.beginPath();
+    sandCtx.arc(x, y, rockR, 0, 2 * Math.PI);
+    let rockColors = [
+      "#726b59",
+      "#555049",
+      "#bcae95",
+      "#e8e3d0",
+      "#998e78",
+      "#332d23",
+    ];
+    let col = rockColors[Math.floor(Math.random() * rockColors.length)];
+    sandCtx.fillStyle = col;
+    sandCtx.globalAlpha = 0.58 + Math.random() * 0.3;
+    sandCtx.shadowColor = "#00000099";
+    sandCtx.shadowBlur = 2 + Math.random() * 2;
+    sandCtx.fill();
+    sandCtx.globalAlpha = 1.0;
+    sandCtx.shadowBlur = 0;
+  } else {
+    let pebR = Math.random() * 1.1 + 0.5;
+    sandCtx.beginPath();
+    sandCtx.arc(x, y, pebR, 0, 2 * Math.PI);
+    sandCtx.fillStyle =
+      Math.random() < 0.7
+        ? "#a6976c"
+        : Math.random() < 0.8
+          ? "#f7e5a1"
+          : "#fff5ce";
+    sandCtx.globalAlpha = Math.random() * 0.5 + 0.5;
+    sandCtx.fill();
+    sandCtx.globalAlpha = 1.0;
+  }
+}
+
+for (let i = 0; i < sandSize * 0.25; i++) {
+  sandCtx.save();
+  sandCtx.globalAlpha = 0.2 + Math.random() * 0.25;
+  sandCtx.strokeStyle = "#4b3e1d";
+  sandCtx.lineWidth = 0.7 + Math.random();
+  sandCtx.beginPath();
+  let startX = Math.random() * sandSize,
+    startY = Math.random() * sandSize;
+  sandCtx.moveTo(startX, startY);
+  let len = Math.random() * 24 + 10;
+  let angle = Math.random() * 2 * Math.PI;
+  sandCtx.lineTo(
+    startX + Math.cos(angle) * len,
+    startY + Math.sin(angle) * len,
+  );
+  sandCtx.stroke();
+  sandCtx.restore();
+
+  if (!vaultUnlocked) {
+    const ex = (endCell.x + 0.5) * CELL_SIZE;
+    const ey = (endCell.y + 0.5) * CELL_SIZE;
+    const dx = ex - player.x;
+    const dy = ey - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < CELL_SIZE * 8) {
+      const angleTo = Math.atan2(dy, dx) - player.angle;
+      const fov = Math.PI / 2;
+      if (Math.abs(angleTo) < fov) {
+        const viewDist = canvas.width / (2 * Math.tan(fov / 2));
+        const screenX = canvas.width / 2 + Math.tan(angleTo) * viewDist;
+
+        ctx.save();
+        ctx.globalAlpha = 0.88;
+        ctx.fillStyle = "#666";
+        ctx.fillRect(screenX - 20, canvas.height / 2 - 50, 40, 100);
+        ctx.font = "bold 14px 'Press Start 2P'";
+        ctx.fillStyle = "#fff";
+        ctx.fillText("LOCKED", screenX, canvas.height / 2 + 60);
+        ctx.restore();
+      }
+    }
+  }
+}
+
+sandCtx.globalAlpha = 1.0;
+
+const wallImage = new Image();
+wallImage.src = "bricks.png";
+let wallTextureReady = false;
+wallImage.onload = () => (wallTextureReady = true);
+
+const mapSprite = new Image();
+mapSprite.src = "map.png";
+let mapSpriteReady = false;
+mapSprite.onload = () => (mapSpriteReady = true);
+
+const lockedWallImage = new Image();
+let lockedWallTextureReady = false;
+lockedWallImage.onload = () => (lockedWallTextureReady = true);
+lockedWallImage.src = "locked_wall.png";
+
+function loop(now) {
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  update(dt);
+  if (mapPopupTimer > 0) mapPopupTimer -= dt;
+
+  let px = Math.floor(player.x / CELL_SIZE);
+  let py = Math.floor(player.y / CELL_SIZE);
+  seenCells.add(py + "," + px);
+
+  if (
+    !playerPath.length ||
+    playerPath[playerPath.length - 1][0] !== px ||
+    playerPath[playerPath.length - 1][1] !== py
+  ) {
+    playerPath.push([px, py]);
+    if (playerPath.length > PATH_MAX) playerPath.shift();
+  }
+
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
