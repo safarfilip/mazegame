@@ -26,12 +26,12 @@ const MIN_WIDTH = 960;
 const MIN_HEIGHT = 600;
 
 function isScreenSupported() {
-  return canvas.width >= MIN_WIDTH && canvas.height >= MIN_HEIGHT;
+  return window.innerWidth  >= MIN_WIDTH
+      && window.innerHeight >= MIN_HEIGHT;
 }
 function isZoomSupported() {
-  return Math.abs(window.outerWidth / window.innerWidth - 1) < 0.01;
+  return Math.abs(window.devicePixelRatio - 1) < 0.02;
 }
-
 function drawUnsupportedOverlay(msg) {
   ctx.save();
   ctx.globalAlpha = 1;
